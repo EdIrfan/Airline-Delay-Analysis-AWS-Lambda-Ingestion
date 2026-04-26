@@ -1,0 +1,86 @@
+name: Branch Gatekeeper
+
+on:
+  pull_request:
+    branches:
+      - main
+      - dev
+
+jobs:
+  check-merge-logic:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. We MUST checkout the code for Flake8 to work
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Setup Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      # 3. Validate Branch Naming & Flow
+      - name: Validate Source Branch
+        run: |
+          TARGET_BRANCH=${{ github.base_ref }}
+          SOURCE_BRANCH=${{ github.head_ref }}
+
+          echo "Target: $TARGET_BRANCH"
+          echo "Source: $SOURCE_BRANCH"
+
+          # ❌ CRITICAL: 'main' should NEVER be a source for a PR. It's the end of the line.
+          if [[ "$SOURCE_BRANCH" == "main" ]]; then
+            echo "::error::❌ ALERT: 'main' is for orchestration only. You cannot use it as a source for a PR!"
+            exit 1
+          fi
+
+          # ❌ CRITICAL: Prevent circular merges (e.g., dev into dev)
+          if [[ "$SOURCE_BRANCH" == "$TARGET_BRANCH" ]]; then
+            echo "::error::❌ ALERT: You are trying to merge '$SOURCE_BRANCH' into itself."
+            exit 1
+          fi
+
+          # ✅ RULE 1: Only 'dev' can merge into 'main'
+          if [[ "$TARGET_BRANCH" == "main" && "$SOURCE_BRANCH" != "dev" ]]; then
+            echo "::error::❌ FLOW ERROR: Only 'dev' can merge into 'main'. No shortcuts allowed!"
+            exit 1
+          fi
+
+          # ✅ RULE 2: Only 'test_' branches can merge into 'dev'
+          if [[ "$TARGET_BRANCH" == "dev" && ! "$SOURCE_BRANCH" =~ ^test_ ]]; then
+            echo "::error::❌ NAMING ERROR: Source '$SOURCE_BRANCH' MUST start with 'test_' prefix for 'dev' to be the Target."
+            exit 1
+          fi
+
+          echo "::notice::✅ Branch logic validated."
+
+      # 4. Check PR Description (Not Null/Empty + Length)
+      - name: Check PR Description
+        run: |
+          PR_BODY="${{ github.event.pull_request.body }}"
+          
+          # Check if body is null, empty, or just whitespace
+          if [[ -z "$PR_BODY" || "$PR_BODY" == "null" || "$PR_BODY" =~ ^[[:space:]]*$ ]]; then
+            echo "::error::❌ PR description cannot be empty! Please explain your changes."
+            exit 1
+          fi
+
+          # Check character length
+          if [ ${#PR_BODY} -lt 10 ]; then
+            echo "::error::❌ PR description is too short (${#PR_BODY} chars). Please provide more context (min 10)!"
+            exit 1
+          fi
+          echo "::notice::✅ PR description validated."
+
+      # 5. Lint with Flake8
+      - name: Lint with flake8
+        run: |
+          pip install flake8
+          echo "[INFO]: Starting flake8 syntax and logic check..."
+          
+          # E9, F63, F7, and F82 are "logic/syntax" errors that stop the build
+          # If this command finds errors, the script exits here and the next echo won't run
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          
+          echo "::notice::✅ Code linting passed. No syntax or logic errors found.  Proceed with PR."
