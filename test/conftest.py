@@ -7,6 +7,7 @@ def setup_env():
     os.environ['DATABRICKS_HOST'] = 'https://fake-workspace.cloud.databricks.com'
     os.environ['SECRET_ARN'] = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:db-token'
     os.environ['PIPELINE_ID'] = 'fake-pipeline-123'
+    os.environ['ENV_TYPE'] = 'dev'
     os.environ['AWS_DEFAULT_REGION'] = 'us-east-2'
 
 @pytest.fixture

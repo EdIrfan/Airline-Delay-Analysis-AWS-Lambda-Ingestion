@@ -1,23 +1,56 @@
 import pytest
+from botocore.exceptions import ClientError
 from src.cleanup.app import lambda_handler
 
 def test_cleanup_success(mocker):
-    # 1. Patch the global instance ALREADY created in the app file
-    # This prevents 'NoCredentialsError' during the test run
+    """Test successful file deletion."""
     mock_s3 = mocker.patch('src.cleanup.app.s3_client') 
     
-    # 2. Define the event matching our Step Function state
     event = {"bucket": "fake-bucket", "file_key": "fake-file.csv"}
-    
-    # 3. Execute the handler
     response = lambda_handler(event, None)
 
-    # 4. Assertions based on our NEW data contract (status vs statusCode)
     assert response['status'] == 'COMPLETED'
     assert response['cleanup_outcome'] == 'DELETED'
     
-    # 5. Verify the S3 call parameters
     mock_s3.delete_object.assert_called_with(
         Bucket="fake-bucket", 
         Key="fake-file.csv"
     )
+
+
+def test_cleanup_missing_parameters(mocker):
+    """Test cleanup when bucket or file_key is missing."""
+    mocker.patch('src.cleanup.app.s3_client')
+    
+    event = {"bucket": "fake-bucket"}
+    response = lambda_handler(event, None)
+
+    assert response['status'] == 'ERROR'
+    assert 'Missing S3 coordinates' in response['message']
+
+
+def test_cleanup_file_not_found(mocker):
+    """Test cleanup when file is already gone (idempotent)."""
+    mock_s3 = mocker.patch('src.cleanup.app.s3_client')
+    
+    error_response = {'Error': {'Code': 'NoSuchKey'}}
+    mock_s3.delete_object.side_effect = ClientError(error_response, 'DeleteObject')
+    
+    event = {"bucket": "fake-bucket", "file_key": "fake-file.csv"}
+    response = lambda_handler(event, None)
+
+    assert response['status'] == 'COMPLETED'
+    assert response['cleanup_outcome'] == 'ALREADY_GONE'
+
+
+def test_cleanup_s3_error(mocker):
+    """Test cleanup when S3 deletion fails."""
+    mock_s3 = mocker.patch('src.cleanup.app.s3_client')
+    
+    error_response = {'Error': {'Code': 'AccessDenied'}}
+    mock_s3.delete_object.side_effect = ClientError(error_response, 'DeleteObject')
+    
+    event = {"bucket": "fake-bucket", "file_key": "fake-file.csv"}
+    response = lambda_handler(event, None)
+
+    assert response['status'] == 'ERROR'
