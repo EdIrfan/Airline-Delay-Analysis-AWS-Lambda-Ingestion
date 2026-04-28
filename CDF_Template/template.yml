@@ -1,0 +1,308 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2010-09-09
+Description: Multi-Environment Orchestration Pipeline for Airline Delay Analysis
+
+Parameters:
+  EnvType:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: "Target environment (dev/prod)"
+
+  GitHubBranch:
+    Type: String
+    Description: "The branch to listen to (e.g., dev or main)"
+
+  ConnectionArn:
+    Type: String
+    Description: "The CodeStar Connection ARN for GitHub"
+
+  RepoId:
+    Type: String
+    Default: "EdIrfan/Airline-Delay-Analysis-AWS-Lambda-Ingestion"
+
+  SecretArn:
+    Type: String
+    Description: "ARN of the Databricks PAT token in Secrets Manager"
+
+  DatabricksHost:
+    Type: String
+    Description: "The Databricks Workspace URL"
+
+  DatabricksPipelineId:
+    Type: String
+    Description: "The UUID of the target DLT Pipeline"
+
+Resources:
+  ## 1. THE ARTIFACT VAULT (S3)
+  PipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "airline-pipeline-artifacts-${AWS::AccountId}-${EnvType}"
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ## 2. THE LANDING ZONE (Source S3)
+  LandingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "airline-data-landing-${AWS::AccountId}-${EnvType}"
+
+  ## 3. THE PIPELINE ROLE
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipelineExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucket*
+                  - s3:GetObject*
+                  - s3:PutObject
+                Resource: 
+                  - !GetAtt PipelineArtifactBucket.Arn
+                  - !Sub "${PipelineArtifactBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                  - codeconnections:UseConnection
+                  - cloudformation:*
+                  - iam:PassRole
+                Resource: "*"
+
+  ## 4. THE BUILD ROLE
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BuildExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetBucketLocation
+                Resource: "*"
+
+  ## 5. THE LAMBDA EXECUTION ROLE (Shared by all 3 Lambdas)
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LambdaAccessPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref SecretArn
+              - Effect: Allow
+                Action: s3:DeleteObject
+                Resource: !Sub "${LandingBucket.Arn}/*"
+
+  ## 6. THE BUILD ENGINE (CodeBuild)
+  PipelineBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${AWS::StackName}-Build-${EnvType}"
+      ServiceRole: !GetAtt BuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: ENV_TYPE
+            Value: !Ref EnvType
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+
+  ## 7. THE PIPELINE (The CI/CD Orchestrator)
+  AppPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${AWS::StackName}-Pipeline-${EnvType}"
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHub_Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              Configuration:
+                ConnectionArn: !Ref ConnectionArn
+                FullRepositoryId: !Ref RepoId
+                BranchName: !Ref GitHubBranch
+                DetectChanges: true 
+              OutputArtifacts:
+                - Name: SourceArtifact
+        - Name: Build_and_Test
+          Actions:
+            - Name: Run_Tests_and_Package
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ProjectName: !Ref PipelineBuildProject
+        - Name: Deploy
+          Actions:
+            - Name: Deploy_Infrastructure
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              InputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: !Sub "Airline-App-Stack-${EnvType}"
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                TemplatePath: BuildArtifact::packaged.yaml
+
+  ## 8. THE LAMBDA FUNCTIONS
+  LauncherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/launcher/
+      Handler: app.lambda_handler
+      Runtime: python3.14
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          DATABRICKS_HOST: !Ref DatabricksHost
+          SECRET_ARN: !Ref SecretArn
+          PIPELINE_ID: !Ref DatabricksPipelineId
+
+  CheckerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/checker/
+      Handler: app.lambda_handler
+      Runtime: python3.14
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          DATABRICKS_HOST: !Ref DatabricksHost
+          SECRET_ARN: !Ref SecretArn
+          PIPELINE_ID: !Ref DatabricksPipelineId
+
+  CleanupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/cleanup/
+      Handler: app.lambda_handler
+      Runtime: python3.14
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  ## 9. THE ORCHESTRATOR (Step Function)
+  OrchestrationStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionSubstitutions:
+        LauncherArn: !GetAtt LauncherFunction.Arn
+        CheckerArn: !GetAtt CheckerFunction.Arn
+        CleanupArn: !GetAtt CleanupFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref LauncherFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CheckerFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CleanupFunction
+      Definition:
+        StartAt: TriggerDatabricks
+        States:
+          TriggerDatabricks:
+            Type: Task
+            Resource: "${LauncherArn}"
+            Retry:
+              - ErrorEquals: ["States.ALL"]
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2.0
+            Next: WaitForProcessing
+          
+          WaitForProcessing:
+            Type: Wait
+            Seconds: 60
+            Next: CheckStatus
+
+          CheckStatus:
+            Type: Task
+            Resource: "${CheckerArn}"
+            Next: EvaluateStatus
+
+          EvaluateStatus:
+            Type: Choice
+            Choices:
+              - Variable: "$.status"
+                StringEquals: "SUCCESS"
+                Next: RunCleanup
+              - Variable: "$.status"
+                StringEquals: "RUNNING"
+                Next: WaitForProcessing
+            Default: PipelineFailed
+
+          RunCleanup:
+            Type: Task
+            Resource: "${CleanupArn}"
+            End: true
+
+          PipelineFailed:
+            Type: Fail
+            Cause: "Databricks DLT Pipeline failed or timed out."
+            Error: "DLTError"

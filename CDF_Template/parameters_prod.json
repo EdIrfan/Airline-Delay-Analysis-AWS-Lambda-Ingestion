@@ -1,0 +1,11 @@
+{
+  "Parameters": {
+    "EnvType": "prod",
+    "GitHubBranch": "main",
+    "RepoId": "EdIrfan/Airline-Delay-Analysis-AWS-Lambda-Ingestion",
+    "DatabricksHost": "https://dbc-0d07525d-6776.cloud.databricks.com",
+    "PipelineId": "0a32c353-41d8-4458-8f45-ab05732f98e8",
+    "ConnectionArn": "arn:aws:codeconnections:us-east-1:557974552977:connection/8beadf8b-23f9-45b2-8c5a-af6d0ab13868",
+    "SecretArn": "arn:aws:secretsmanager:us-east-1:557974552977:secret:airline-delay-analysis-databricks-token-ilf6qZ"
+  }
+}
