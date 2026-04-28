@@ -1,4 +1,4 @@
+requests==2.31.0
+boto3==1.34.0
 pytest==8.0.0
 pytest-mock==3.12.0
-# We include the primary ones here too so that the test environment has them
--r ../requirements.txt
