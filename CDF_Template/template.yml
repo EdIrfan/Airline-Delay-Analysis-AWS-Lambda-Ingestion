@@ -224,7 +224,7 @@ Resources:
   AppPipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
-      Name: !Sub "Airline-Delay-Analysis-Pipeline-${EnvType}-v2"
+      Name: !Sub "Airline-Delay-Analysis-Pipeline-${EnvType}"
       RoleArn: !GetAtt PipelineRole.Arn
       ArtifactStore:
         Type: S3
