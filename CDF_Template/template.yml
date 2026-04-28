@@ -33,6 +33,44 @@ Parameters:
     Description: "The UUID of the target DLT Pipeline"
 
 Resources:
+  
+  ## 0. Cloud Formation Execution Role
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "Airline-Delay-Analysis-Execution-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+      Policies:
+        - PolicyName: IAMPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:PassRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:TagRole
+                  - iam:UntagRole
+                Resource: "*"
+
+
   ## 1. THE ARTIFACT VAULT (S3)
   PipelineArtifactBucket:
     Type: AWS::S3::Bucket
@@ -51,7 +89,7 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "airline-data-landing-${AWS::AccountId}-${EnvType}"
-
+  
   ## 3. THE PIPELINE ROLE
   PipelineRole:
     Type: AWS::IAM::Role
@@ -81,9 +119,30 @@ Resources:
                   - codebuild:BatchGetBuilds
                   - codebuild:StartBuild
                   - codeconnections:UseConnection
-                  - cloudformation:*
-                  - iam:PassRole
                 Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:GetTemplate
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:ValidateTemplate
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt CloudFormationExecutionRole.Arn
+                Condition:
+                  StringEqualsIfExists:
+                    "iam:PassedToService": "cloudformation.amazonaws.com"
+
 
   ## 4. THE BUILD ROLE
   BuildRole:
@@ -136,14 +195,17 @@ Resources:
                 Action: secretsmanager:GetSecretValue
                 Resource: !Ref SecretArn
               - Effect: Allow
-                Action: s3:DeleteObject
+                Action: 
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:DeleteObject
                 Resource: !Sub "${LandingBucket.Arn}/*"
 
   ## 6. THE BUILD ENGINE (CodeBuild)
   PipelineBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: !Sub "${AWS::StackName}-Build-${EnvType}"
+      Name: !Sub "Airline-Delay-Analysis-Build-${EnvType}"
       ServiceRole: !GetAtt BuildRole.Arn
       Artifacts:
         Type: CODEPIPELINE
@@ -162,7 +224,7 @@ Resources:
   AppPipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
-      Name: !Sub "${AWS::StackName}-Pipeline-${EnvType}"
+      Name: !Sub "Airline-Delay-Analysis-Pipeline-${EnvType}-v2"
       RoleArn: !GetAtt PipelineRole.Arn
       ArtifactStore:
         Type: S3
@@ -212,6 +274,7 @@ Resources:
                 StackName: !Sub "Airline-App-Stack-${EnvType}"
                 Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
                 TemplatePath: BuildArtifact::packaged.yaml
+                RoleArn: !GetAtt CloudFormationExecutionRole.Arn
 
   ## 8. THE LAMBDA FUNCTIONS
   LauncherFunction:
@@ -219,7 +282,7 @@ Resources:
     Properties:
       CodeUri: src/launcher/
       Handler: app.lambda_handler
-      Runtime: python3.14
+      Runtime: python3.13
       Role: !GetAtt LambdaExecutionRole.Arn
       Environment:
         Variables:
@@ -232,7 +295,7 @@ Resources:
     Properties:
       CodeUri: src/checker/
       Handler: app.lambda_handler
-      Runtime: python3.14
+      Runtime: python3.13
       Role: !GetAtt LambdaExecutionRole.Arn
       Environment:
         Variables:
@@ -245,7 +308,7 @@ Resources:
     Properties:
       CodeUri: src/cleanup/
       Handler: app.lambda_handler
-      Runtime: python3.14
+      Runtime: python3.13
       Role: !GetAtt LambdaExecutionRole.Arn
 
   ## 9. THE ORCHESTRATOR (Step Function)

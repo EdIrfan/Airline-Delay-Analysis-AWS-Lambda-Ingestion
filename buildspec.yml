@@ -3,10 +3,11 @@ version: 0.2
 phases:
   install:
     runtime-versions:
-      python: 3.14  
+      python: 3.13
     commands:
       - echo "[INSTALL]: Installing dependencies..."
       - pip install --upgrade pip
+      - pip install -r requirements.txt
       - pip install -r test/requirements.txt
       - echo "[INSTALL]: Updating AWS SAM CLI..."
       - pip install aws-sam-cli
@@ -15,16 +16,26 @@ phases:
     commands:
       - echo "[PRE-BUILD]: Running Unit Tests..."
       - export PYTHONPATH=$PYTHONPATH:$(pwd)/src
-      # Note: 'test' folder (singular) to match your screenshot
       - python -m pytest test/unit/ -v
+      
+      # Configuring these for SAM to understand what to do
+      - echo "[PRE-BUILD]: Injecting root requirements into Lambda folders for SAM..."
+      - cp requirements.txt src/launcher/
+      - cp requirements.txt src/checker/
+      - cp requirements.txt src/cleanup/
 
   build:
     commands:
       - echo "[BUILD]: Packaging SAM template for ${ENV_TYPE}..."
       - sam package \
           --template-file CDF_Template/template.yml \
+          --base-dir . \
           --s3-bucket $ARTIFACT_BUCKET \
           --output-template-file packaged.yaml
+          
+      # THE DYNAMIC CONFIG TRICK: Map specific env file to a generic name
+      - echo "[BUILD]: Preparing configuration for ${ENV_TYPE}..."
+      - cp CDF_Template/parameters_${ENV_TYPE}.json standard_params.json
 
   post_build:
     commands:
@@ -33,4 +44,5 @@ phases:
 artifacts:
   files:
     - packaged.yaml
+    - standard_params.json
   discard-paths: yes
