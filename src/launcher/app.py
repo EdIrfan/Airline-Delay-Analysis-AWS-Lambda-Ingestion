@@ -28,7 +28,7 @@ def get_db_token(secret_arn):
         return None
 
 def lambda_handler(event, context):
-    logger.info("Lambda execution started with event--")
+    logger.info("Lambda execution started with event")
     try:
         # 1. Extract file info from S3 Event
         try:
