@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2010-09-09
+Transform: AWS::Serverless-2016-10-31
 Description: Multi-Environment Orchestration Pipeline for Airline Delay Analysis
 
 Parameters:
@@ -34,6 +34,30 @@ Parameters:
 
 Resources:
   
+  ## 0. Cloud Formation Execution Role Managed Policy
+  CloudFormationExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:GetRole
+              - iam:PassRole
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:GetRolePolicy
+              - iam:ListRolePolicies
+              - iam:ListAttachedRolePolicies
+              - iam:TagRole
+              - iam:UntagRole
+            Resource: "*"
+
   ## 0. Cloud Formation Execution Role
   CloudFormationExecutionRole:
     Type: AWS::IAM::Role
@@ -48,27 +72,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/PowerUserAccess
-      Policies:
-        - PolicyName: IAMPermissions
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - iam:CreateRole
-                  - iam:DeleteRole
-                  - iam:GetRole
-                  - iam:PassRole
-                  - iam:AttachRolePolicy
-                  - iam:DetachRolePolicy
-                  - iam:PutRolePolicy
-                  - iam:DeleteRolePolicy
-                  - iam:GetRolePolicy
-                  - iam:ListRolePolicies
-                  - iam:ListAttachedRolePolicies
-                  - iam:TagRole
-                  - iam:UntagRole
-                Resource: "*"
+        - !Ref CloudFormationExecutionPolicy
 
 
   ## 1. THE ARTIFACT VAULT (S3)
@@ -78,6 +82,10 @@ Resources:
       BucketName: !Sub "airline-pipeline-artifacts-${AWS::AccountId}-${EnvType}"
       VersioningConfiguration:
         Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -89,7 +97,65 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "airline-data-landing-${AWS::AccountId}-${EnvType}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LoggingConfiguration:
+        DestinationBucketName: !Ref PipelineArtifactBucket
+        LogFilePrefix: logs/landing/
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
   
+  ## 3. THE PIPELINE ROLE MANAGED POLICY
+  PipelineExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetBucket*
+              - s3:GetObject*
+              - s3:PutObject
+            Resource: 
+              - !GetAtt PipelineArtifactBucket.Arn
+              - !Sub "${PipelineArtifactBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+              - codeconnections:UseConnection
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackResources
+              - cloudformation:DescribeStackEvents
+              - cloudformation:GetTemplate
+              - cloudformation:DescribeChangeSet
+              - cloudformation:CreateChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:ValidateTemplate
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource: !GetAtt CloudFormationExecutionRole.Arn
+            Condition:
+              StringEqualsIfExists:
+                "iam:PassedToService": "cloudformation.amazonaws.com"
+
   ## 3. THE PIPELINE ROLE
   PipelineRole:
     Type: AWS::IAM::Role
@@ -101,48 +167,33 @@ Resources:
             Principal:
               Service: codepipeline.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: PipelineExecutionPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetBucket*
-                  - s3:GetObject*
-                  - s3:PutObject
-                Resource: 
-                  - !GetAtt PipelineArtifactBucket.Arn
-                  - !Sub "${PipelineArtifactBucket.Arn}/*"
-              - Effect: Allow
-                Action:
-                  - codebuild:BatchGetBuilds
-                  - codebuild:StartBuild
-                  - codeconnections:UseConnection
-                Resource: "*"
-              - Effect: Allow
-                Action:
-                  - cloudformation:CreateStack
-                  - cloudformation:UpdateStack
-                  - cloudformation:DeleteStack
-                  - cloudformation:DescribeStacks
-                  - cloudformation:DescribeStackResources
-                  - cloudformation:DescribeStackEvents
-                  - cloudformation:GetTemplate
-                  - cloudformation:DescribeChangeSet
-                  - cloudformation:CreateChangeSet
-                  - cloudformation:DeleteChangeSet
-                  - cloudformation:ExecuteChangeSet
-                  - cloudformation:ValidateTemplate
-                Resource: "*"
-              - Effect: Allow
-                Action:
-                  - iam:PassRole
-                Resource: !GetAtt CloudFormationExecutionRole.Arn
-                Condition:
-                  StringEqualsIfExists:
-                    "iam:PassedToService": "cloudformation.amazonaws.com"
+      ManagedPolicyArns:
+        - !Ref PipelineExecutionPolicy
 
+
+  ## 4. THE BUILD ROLE MANAGED POLICY
+  BuildExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:GetBucketLocation
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource: !GetAtt CloudFormationExecutionRole.Arn
 
   ## 4. THE BUILD ROLE
   BuildRole:
@@ -155,23 +206,28 @@ Resources:
             Principal:
               Service: codebuild.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: BuildExecutionPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: "*"
-              - Effect: Allow
-                Action:
-                  - s3:PutObject
-                  - s3:GetObject
-                  - s3:GetBucketLocation
-                Resource: "*"
+      ManagedPolicyArns:
+        - !Ref BuildExecutionPolicy
+
+  ## 5. THE LAMBDA EXECUTION ROLE MANAGED POLICY
+  LambdaAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: !Ref SecretArn
+          - Effect: Allow
+            Action: 
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !Sub "${LandingBucket.Arn}/*"
+          - Effect: Allow
+            Action: 
+              - s3:ListBucket
+            Resource: !GetAtt LandingBucket.Arn
 
   ## 5. THE LAMBDA EXECUTION ROLE (Shared by all 3 Lambdas)
   LambdaExecutionRole:
@@ -186,20 +242,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: LambdaAccessPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action: secretsmanager:GetSecretValue
-                Resource: !Ref SecretArn
-              - Effect: Allow
-                Action: 
-                  - s3:GetObject
-                  - s3:ListBucket
-                  - s3:DeleteObject
-                Resource: !Sub "${LandingBucket.Arn}/*"
+        - !Ref LambdaAccessPolicy
 
   ## 6. THE BUILD ENGINE (CodeBuild)
   PipelineBuildProject:
@@ -216,6 +259,7 @@ Resources:
         EnvironmentVariables:
           - Name: ENV_TYPE
             Value: !Ref EnvType
+            Type: PLAINTEXT
       Source:
         Type: CODEPIPELINE
         BuildSpec: buildspec.yml
@@ -287,7 +331,6 @@ Resources:
       Environment:
         Variables:
           DATABRICKS_HOST: !Ref DatabricksHost
-          SECRET_ARN: !Ref SecretArn
           PIPELINE_ID: !Ref DatabricksPipelineId
 
   CheckerFunction:
@@ -300,7 +343,6 @@ Resources:
       Environment:
         Variables:
           DATABRICKS_HOST: !Ref DatabricksHost
-          SECRET_ARN: !Ref SecretArn
           PIPELINE_ID: !Ref DatabricksPipelineId
 
   CleanupFunction:
