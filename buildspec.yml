@@ -11,19 +11,15 @@ phases:
       - pip install -r test/requirements.txt
       - echo "[INSTALL]: Updating AWS SAM CLI..."
       - pip install aws-sam-cli
-
   pre_build:
     commands:
       - echo "[PRE-BUILD]: Running Unit Tests..."
       - export PYTHONPATH=$PYTHONPATH:$(pwd)/src
       - python -m pytest test/unit/ -v
-      
-      # Configuring these for SAM to understand what to do
       - echo "[PRE-BUILD]: Injecting root requirements into Lambda folders for SAM..."
       - cp requirements.txt src/launcher/
       - cp requirements.txt src/checker/
       - cp requirements.txt src/cleanup/
-
   build:
     commands:
       - echo "[BUILD]: Packaging SAM template for ${ENV_TYPE}..."
@@ -32,11 +28,8 @@ phases:
           --base-dir . \
           --s3-bucket $ARTIFACT_BUCKET \
           --output-template-file packaged.yaml
-          
-      # THE DYNAMIC CONFIG TRICK: Map specific env file to a generic name
       - echo "[BUILD]: Preparing configuration for ${ENV_TYPE}..."
       - cp CDF_Template/parameters_${ENV_TYPE}.json standard_params.json
-
   post_build:
     commands:
       - echo "[POST-BUILD]: Build completed on $(date)"

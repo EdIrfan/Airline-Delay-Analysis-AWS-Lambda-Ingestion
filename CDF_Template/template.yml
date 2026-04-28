@@ -316,7 +316,7 @@ Resources:
               Configuration:
                 ActionMode: CREATE_UPDATE
                 StackName: !Sub "Airline-App-Stack-${EnvType}"
-                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
                 TemplatePath: BuildArtifact::packaged.yaml
                 RoleArn: !GetAtt CloudFormationExecutionRole.Arn
 
