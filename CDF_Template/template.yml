@@ -321,6 +321,7 @@ Resources:
                 StackName: !Sub "Airline-App-Stack-${EnvType}"
                 Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
                 TemplatePath: BuildArtifact::packaged.yaml
+                TemplateConfiguration: BuildArtifact::standard_params.json
                 RoleArn: !GetAtt CloudFormationExecutionRole.Arn
 
   ## 8. THE LAMBDA FUNCTIONS
