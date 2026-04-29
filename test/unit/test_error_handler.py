@@ -148,7 +148,7 @@ class TestErrorHandler:
             'event_context': {'status': 'FAILED'}
         }
         
-        result = error_handler_app.process_direct_error(event)
+        result = error_handler_app.process_direct_error(event, mock_context)
         
         # Verify result
         assert result['status'] == 'PUBLISHED'

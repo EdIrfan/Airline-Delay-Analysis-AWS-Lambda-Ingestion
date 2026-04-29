@@ -132,7 +132,7 @@ def lambda_handler(event, context):
             return process_sqs_messages(event)
         else:
             # Direct invocation (e.g., from Step Function failure state)
-            return process_direct_error(event)
+            return process_direct_error(event, context)
     
     except Exception as e:
         logger.exception("Error handler failed to process error")
@@ -179,7 +179,7 @@ def process_sqs_messages(event):
     }
 
 
-def process_direct_error(event):
+def process_direct_error(event, context):
     """Process direct invocation from Step Function or Lambda exception."""
     logger.info("Processing direct error invocation")
     
