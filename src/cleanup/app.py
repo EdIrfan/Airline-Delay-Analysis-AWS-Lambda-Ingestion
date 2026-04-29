@@ -1,6 +1,8 @@
 import json
 import boto3
 import logging
+import traceback
+from datetime import datetime
 from botocore.exceptions import ClientError
 
 # Set up structured logging
@@ -9,6 +11,42 @@ logger.setLevel(logging.INFO)
 
 # Initialize S3 client outside the handler for TCP connection reuse
 s3_client = boto3.client('s3')
+
+# Initialize SQS client for error reporting
+sqs_client = boto3.client('sqs')
+
+import os
+ERROR_QUEUE_URL = os.environ.get('ERROR_QUEUE_URL')
+
+
+def send_error_to_sqs(lambda_name, error_message, error_traceback, event, context):
+    """
+    Send error details to SQS for centralized error handling.
+    """
+    if not ERROR_QUEUE_URL:
+        logger.warning("ERROR_QUEUE_URL not configured. Skipping SQS error reporting.")
+        return
+    
+    try:
+        error_data = {
+            'lambda_name': lambda_name,
+            'error_source': 'Lambda',
+            'error_message': str(error_message),
+            'error_traceback': error_traceback,
+            'timestamp': datetime.utcnow().isoformat(),
+            'log_group': context.log_group_name,
+            'log_stream': context.log_stream_name,
+            'event_context': event if isinstance(event, dict) else str(event)
+        }
+        
+        sqs_client.send_message(
+            QueueUrl=ERROR_QUEUE_URL,
+            MessageBody=json.dumps(error_data)
+        )
+        logger.info(f"Error details sent to SQS queue: {ERROR_QUEUE_URL}")
+    except Exception as sqs_error:
+        logger.exception(f"Failed to send error to SQS: {str(sqs_error)}")
+
 
 def lambda_handler(event, context):
     logger.info(f"Cleanup execution started with event: {json.dumps(event)}")
@@ -48,4 +86,6 @@ def lambda_handler(event, context):
 
     except Exception as e:
         logger.exception("Unexpected system failure in Cleanup Lambda.")
+        error_traceback = traceback.format_exc()
+        send_error_to_sqs('CleanupFunction', str(e), error_traceback, event, context)
         return {**event, "status": "ERROR", "message": f"Unexpected Failure: {str(e)}"}

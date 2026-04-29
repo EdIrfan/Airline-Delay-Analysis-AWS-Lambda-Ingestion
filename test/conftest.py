@@ -9,6 +9,8 @@ def setup_env():
     os.environ['PIPELINE_ID'] = 'fake-pipeline-123'
     os.environ['ENV_TYPE'] = 'dev'
     os.environ['AWS_DEFAULT_REGION'] = 'us-east-2'
+    os.environ['ERROR_QUEUE_URL'] = 'https://sqs.us-east-2.amazonaws.com/123456789012/airline-error-notification-dev'
+    os.environ['ERROR_TOPIC_ARN'] = 'arn:aws:sns:us-east-2:123456789012:airline-error-notifications-dev'
 
 @pytest.fixture
 def mock_s3_event():
