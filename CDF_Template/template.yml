@@ -260,6 +260,9 @@ Resources:
           - Name: ENV_TYPE
             Value: !Ref EnvType
             Type: PLAINTEXT
+          - Name: ARTIFACT_BUCKET 
+            Value: !Ref PipelineArtifactBucket
+            Type: PLAINTEXT
       Source:
         Type: CODEPIPELINE
         BuildSpec: buildspec.yml
