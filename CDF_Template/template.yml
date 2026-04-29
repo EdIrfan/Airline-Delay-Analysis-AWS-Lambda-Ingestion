@@ -308,7 +308,7 @@ Resources:
                 ProjectName: !Ref PipelineBuildProject
         - Name: Deploy
           Actions:
-            - Name: Deploy_Infrastructure
+            - Name: Create_ChangeSet
               ActionTypeId:
                 Category: Deploy
                 Owner: AWS
@@ -317,12 +317,25 @@ Resources:
               InputArtifacts:
                 - Name: BuildArtifact
               Configuration:
-                ActionMode: CREATE_UPDATE
+                ActionMode: CHANGE_SET_REPLACE
                 StackName: !Sub "Airline-App-Stack-${EnvType}"
+                ChangeSetName: !Sub "Pipeline-ChangeSet-${EnvType}"
                 Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
                 TemplatePath: BuildArtifact::packaged.yaml
                 TemplateConfiguration: BuildArtifact::standard_params.json
                 RoleArn: !GetAtt CloudFormationExecutionRole.Arn
+              RunOrder: 1
+            - Name: Execute_ChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                StackName: !Sub "Airline-App-Stack-${EnvType}"
+                ChangeSetName: !Sub "Pipeline-ChangeSet-${EnvType}"
+              RunOrder: 2
 
   ## 8. THE LAMBDA FUNCTIONS
   LauncherFunction:
