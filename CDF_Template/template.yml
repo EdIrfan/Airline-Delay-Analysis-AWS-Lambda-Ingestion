@@ -324,7 +324,7 @@ Resources:
   LauncherFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/launcher/
+      CodeUri: ../src/launcher/
       Handler: app.lambda_handler
       Runtime: python3.13
       EphemeralStorage:
@@ -339,7 +339,7 @@ Resources:
   CheckerFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/checker/
+      CodeUri: ../src/checker/
       Handler: app.lambda_handler
       Runtime: python3.13
       EphemeralStorage:
@@ -354,7 +354,7 @@ Resources:
   CleanupFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/cleanup/
+      CodeUri: ../src/cleanup/
       Handler: app.lambda_handler
       Runtime: python3.13
       EphemeralStorage:
