@@ -2,7 +2,7 @@ import os
 import json
 import boto3
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import traceback
 from html import escape
 
@@ -24,7 +24,7 @@ def format_html_email(error_data):
     lambda_name = error_data.get('lambda_name', 'Unknown')
     error_message = error_data.get('error_message', 'No error message provided')
     error_traceback = error_data.get('error_traceback', 'No traceback available')
-    timestamp = error_data.get('timestamp', datetime.utcnow().isoformat())
+    timestamp = error_data.get('timestamp', datetime.now(timezone.utc).isoformat())
     log_group = error_data.get('log_group', 'N/A')
     log_stream = error_data.get('log_stream', 'N/A')
     event_context = error_data.get('event_context', {})
@@ -191,7 +191,7 @@ def process_direct_error(event, context):
                 'error_source': 'Step Function State Machine',
                 'error_message': event.get('error_message', 'Unknown error'),
                 'error_traceback': 'See CloudWatch Logs for details',
-                'timestamp': event.get('timestamp', datetime.utcnow().isoformat()),
+                'timestamp': event.get('timestamp', datetime.now(timezone.utc).isoformat()),
                 'log_group': context.log_group_name if hasattr(context, 'log_group_name') else 'N/A',
                 'log_stream': context.log_stream_name if hasattr(context, 'log_stream_name') else 'N/A',
                 'event_context': event.get('event_context', {})
