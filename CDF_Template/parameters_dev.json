@@ -5,7 +5,7 @@
     "RepoId": "EdIrfan/Airline-Delay-Analysis-AWS-Lambda-Ingestion",
     "DatabricksHost": "https://dbc-0d07525d-6776.cloud.databricks.com",
     "DatabricksPipelineId": "f4ed740f-01c3-4cac-8d09-939815359b64",
-    "ConnectionArn": "arn:aws:codeconnections:us-east-1:300860569246:connection/7708273f-8f8e-4aba-ab9e-62e80ff77ed2",
+    "ConnectionArn": "arn:aws:codeconnections:us-east-1:300860569246:connection/e67c138b-90ef-42fb-95c1-bb9a0dc8040f",
     "SecretArn": "arn:aws:secretsmanager:us-east-1:300860569246:secret:airline-delay-analysis-databricks-token-uHIomr"
   }
 }
