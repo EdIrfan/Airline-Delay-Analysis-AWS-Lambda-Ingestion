@@ -327,6 +327,9 @@ Resources:
       CodeUri: src/launcher/
       Handler: app.lambda_handler
       Runtime: python3.13
+      EphemeralStorage:
+        Size: 512
+      MemorySize: 1024
       Role: !GetAtt LambdaExecutionRole.Arn
       Environment:
         Variables:
@@ -339,6 +342,9 @@ Resources:
       CodeUri: src/checker/
       Handler: app.lambda_handler
       Runtime: python3.13
+      EphemeralStorage:
+        Size: 512
+      MemorySize: 1024
       Role: !GetAtt LambdaExecutionRole.Arn
       Environment:
         Variables:
@@ -351,6 +357,9 @@ Resources:
       CodeUri: src/cleanup/
       Handler: app.lambda_handler
       Runtime: python3.13
+      EphemeralStorage:
+        Size: 512
+      MemorySize: 1024
       Role: !GetAtt LambdaExecutionRole.Arn
 
   ## 9. THE ORCHESTRATOR (Step Function)

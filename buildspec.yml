@@ -22,15 +22,15 @@ phases:
       - cp requirements.txt src/cleanup/
   build:
     commands:
-      - echo "[BUILD] CodeBuild SRC DIR is $CODEBUILD_SRC_DIR"
-      - echo "[BUILD] Current working directory:"
+      - echo "[BUILD] Current directory and contents:"
       - pwd
+      - ls -la
       - echo "[BUILD] Building SAM template..."
-      - sam build --template $CODEBUILD_SRC_DIR/../CDF_Template/template.yml --build-dir $CODEBUILD_SRC_DIR/.aws-sam/build
+      - sam build --template CDF_Template/template.yml
       - echo "[BUILD] Packaging SAM template..."
       - sam package --s3-bucket $ARTIFACT_BUCKET --output-template-file packaged.yaml
       - echo "[BUILD] Preparing configuration..."
-      - cp $CODEBUILD_SRC_DIR/../CDF_Template/parameters_${ENV_TYPE}.json standard_params.json
+      - cp CDF_Template/parameters_${ENV_TYPE}.json ./standard_params.json
   post_build:
     commands:
       - echo "[POST-BUILD] Build completed on $(date)"
