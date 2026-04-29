@@ -32,6 +32,11 @@ Parameters:
     Type: String
     Description: "The UUID of the target DLT Pipeline"
 
+  NotificationEmail:
+    Type: String
+    Description: "Email address for failure notifications"
+    AllowedPattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+
 Resources:
   
   ## 0. Cloud Formation Execution Role Managed Policy
@@ -111,6 +116,27 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+
+  ## 2.5. ERROR NOTIFICATION INFRASTRUCTURE (SQS + SNS)
+  ErrorNotificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "airline-error-notification-${EnvType}"
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 1209600  # 14 days
+
+  ErrorNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "airline-error-notifications-${EnvType}"
+      DisplayName: "Airline Pipeline Error Notifications"
+
+  ErrorNotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref ErrorNotificationTopic
+      Endpoint: !Ref NotificationEmail
   
   ## 3. THE PIPELINE ROLE MANAGED POLICY
   PipelineExecutionPolicy:
@@ -228,6 +254,20 @@ Resources:
             Action: 
               - s3:ListBucket
             Resource: !GetAtt LandingBucket.Arn
+          - Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt ErrorNotificationQueue.Arn
+          - Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+            Resource: !GetAtt ErrorNotificationQueue.Arn
+          - Effect: Allow
+            Action:
+              - sns:Publish
+            Resource: !Ref ErrorNotificationTopic
 
   ## 5. THE LAMBDA EXECUTION ROLE (Shared by all 3 Lambdas)
   LambdaExecutionRole:
@@ -352,6 +392,8 @@ Resources:
         Variables:
           DATABRICKS_HOST: !Ref DatabricksHost
           PIPELINE_ID: !Ref DatabricksPipelineId
+          ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
+          ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
 
   CheckerFunction:
     Type: AWS::Serverless::Function
@@ -367,6 +409,8 @@ Resources:
         Variables:
           DATABRICKS_HOST: !Ref DatabricksHost
           PIPELINE_ID: !Ref DatabricksPipelineId
+          ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
+          ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
 
   CleanupFunction:
     Type: AWS::Serverless::Function
@@ -378,6 +422,26 @@ Resources:
         Size: 512
       MemorySize: 1024
       Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
+          ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
+
+  ErrorHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src/error_handler/
+      Handler: app.lambda_handler
+      Runtime: python3.13
+      EphemeralStorage:
+        Size: 512
+      MemorySize: 512
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
+          ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
+      Timeout: 30
 
   ## 9. THE ORCHESTRATOR (Step Function)
   OrchestrationStateMachine:
@@ -387,6 +451,7 @@ Resources:
         LauncherArn: !GetAtt LauncherFunction.Arn
         CheckerArn: !GetAtt CheckerFunction.Arn
         CleanupArn: !GetAtt CleanupFunction.Arn
+        ErrorHandlerArn: !GetAtt ErrorHandlerFunction.Arn
       Policies:
         - LambdaInvokePolicy:
             FunctionName: !Ref LauncherFunction
@@ -394,6 +459,8 @@ Resources:
             FunctionName: !Ref CheckerFunction
         - LambdaInvokePolicy:
             FunctionName: !Ref CleanupFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ErrorHandlerFunction
       Definition:
         StartAt: TriggerDatabricks
         States:
@@ -426,12 +493,24 @@ Resources:
               - Variable: "$.status"
                 StringEquals: "RUNNING"
                 Next: WaitForProcessing
-            Default: PipelineFailed
+            Default: ReportFailure
 
           RunCleanup:
             Type: Task
             Resource: "${CleanupArn}"
             End: true
+
+          ReportFailure:
+            Type: Task
+            Resource: "${ErrorHandlerArn}"
+            Parameters:
+              error_source: "StepFunction"
+              error_message.$: "States.JsonToString($)"
+              timestamp.$: "$$.State.EnteredTime"
+            Next: PipelineFailed
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                Next: PipelineFailed
 
           PipelineFailed:
             Type: Fail

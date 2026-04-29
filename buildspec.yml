@@ -20,6 +20,7 @@ phases:
       - cp requirements.txt src/launcher/
       - cp requirements.txt src/checker/
       - cp requirements.txt src/cleanup/
+      - cp requirements.txt src/error_handler/
   build:
     commands:
       - echo "[BUILD] Current directory and contents:"
