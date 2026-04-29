@@ -63,7 +63,7 @@ class TestErrorHandler:
         assert '&lt;script&gt;' in html_output
         assert '&lt;Function&gt;' in html_output
     
-    @patch('src.error_handler_app.sns_client')
+    @patch('src.error_handler.app.sns_client')
     def test_publish_error_notification(self, mock_sns, sample_error_data):
         """Test publishing error notification to SNS."""
         mock_sns.publish = MagicMock(return_value={'MessageId': 'test-message-id'})
@@ -78,8 +78,8 @@ class TestErrorHandler:
         assert call_args[1]['TopicArn'] is not None
         assert 'TestFunction' in call_args[1]['Subject']
     
-    @patch('src.error_handler_app.sqs_client')
-    @patch('src.error_handler_app.sns_client')
+    @patch('src.error_handler.app.sqs_client')
+    @patch('src.error_handler.app.sns_client')
     def test_process_sqs_messages(self, mock_sns, mock_sqs, sample_error_data, mock_context):
         """Test processing SQS messages."""
         mock_sqs.delete_message = MagicMock()
@@ -109,8 +109,8 @@ class TestErrorHandler:
         # Verify SQS delete was called for each message
         assert mock_sqs.delete_message.call_count == 2
     
-    @patch('src.error_handler_app.sqs_client')
-    @patch('src.error_handler_app.sns_client')
+    @patch('src.error_handler.app.sqs_client')
+    @patch('src.error_handler.app.sns_client')
     def test_process_sqs_messages_with_invalid_json(self, mock_sns, mock_sqs, mock_context):
         """Test processing SQS messages with invalid JSON."""
         mock_sqs.delete_message = MagicMock()
@@ -133,7 +133,7 @@ class TestErrorHandler:
         assert result['processed'] == 0
         assert result['failed'] == 1
     
-    @patch('src.error_handler_app.sns_client')
+    @patch('src.error_handler.app.sns_client')
     def test_process_direct_error_step_function(self, mock_sns, mock_context):
         """Test processing direct error from Step Function."""
         mock_sns.publish = MagicMock(return_value={'MessageId': 'test-message-id'})
@@ -142,7 +142,7 @@ class TestErrorHandler:
         event = {
             'error_source': 'StepFunction',
             'error_message': 'Pipeline failed',
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'event_context': {'status': 'FAILED'}
         }
         
@@ -155,8 +155,8 @@ class TestErrorHandler:
         # Verify SNS publish was called
         assert mock_sns.publish.call_count >= 1
     
-    @patch('src.error_handler_app.sqs_client')
-    @patch('src.error_handler_app.sns_client')
+    @patch('src.error_handler.app.sqs_client')
+    @patch('src.error_handler.app.sns_client')
     def test_lambda_handler_with_sqs_event(self, mock_sns, mock_sqs, sample_error_data, mock_context):
         """Test lambda_handler with SQS event."""
         mock_sqs.delete_message = MagicMock()
@@ -178,7 +178,7 @@ class TestErrorHandler:
         assert result['status'] == 'PROCESSED'
         assert result['statusCode'] == 200
     
-    @patch('src.error_handler_app.sns_client')
+    @patch('src.error_handler.app.sns_client')
     def test_lambda_handler_with_direct_error(self, mock_sns, mock_context):
         """Test lambda_handler with direct error invocation."""
         mock_sns.publish = MagicMock(return_value={'MessageId': 'test-message-id'})
@@ -187,7 +187,7 @@ class TestErrorHandler:
         event = {
             'error_source': 'Lambda',
             'error_message': 'Direct error',
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
         
         result = error_handler_app.lambda_handler(event, mock_context)
@@ -210,7 +210,7 @@ class TestErrorReportingIntegration:
         context.aws_request_id = 'test-request-id'
         return context
     
-    @patch('src.error_handler_app.sqs_client')
+    @patch('src.error_handler.app.sqs_client')
     def test_send_error_to_sqs_called_from_launcher(self, mock_sqs, mock_context):
         """Test that Launcher calls send_error_to_sqs on exception."""
         mock_sqs.send_message = MagicMock()
@@ -226,7 +226,7 @@ class TestErrorReportingIntegration:
             'error_source': 'Lambda',
             'error_message': error_message,
             'error_traceback': error_traceback,
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'log_group': mock_context.log_group_name,
             'log_stream': mock_context.log_stream_name,
             'event_context': event
