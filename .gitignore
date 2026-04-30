@@ -222,3 +222,6 @@ __marimo__/
 #Ignoring aws sam
 .aws-sam
 samconfig.toml
+
+#ignoring claude
+.claude
