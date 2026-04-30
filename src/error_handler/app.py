@@ -147,6 +147,7 @@ def process_sqs_messages(event):
     """Process SQS batch messages."""
     logger.info(f"Processing {len(event['Records'])} SQS message(s)")
     
+    queue_url = os.environ.get('ERROR_QUEUE_URL')
     failed_messages = []
     
     for record in event['Records']:
@@ -159,7 +160,7 @@ def process_sqs_messages(event):
             
             # Delete from SQS
             sqs_client.delete_message(
-                QueueUrl=ERROR_QUEUE_URL,
+                QueueUrl=queue_url,
                 ReceiptHandle=receipt_handle
             )
             logger.info(f"Successfully processed and deleted message: {receipt_handle}")
@@ -222,6 +223,8 @@ def publish_error_notification(error_data):
     """Publish formatted error to SNS topic."""
     logger.info(f"Publishing error notification for Lambda: {error_data.get('lambda_name', 'Unknown')}")
     
+    topic_arn = os.environ.get('ERROR_TOPIC_ARN')
+    
     # Format HTML email
     html_body = format_html_email(error_data)
     
@@ -249,7 +252,7 @@ EVENT CONTEXT:
     
     # Publish to SNS
     response = sns_client.publish(
-        TopicArn=ERROR_TOPIC_ARN,
+        TopicArn=topic_arn,
         Subject=f"[AIRLINE PIPELINE ERROR] {error_data.get('lambda_name', 'Unknown')} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         Message=text_body,
         MessageStructure='json',
@@ -262,7 +265,7 @@ EVENT CONTEXT:
     
     # Publish HTML version
     sns_client.publish(
-        TopicArn=ERROR_TOPIC_ARN,
+        TopicArn=topic_arn,
         Subject=f"[AIRLINE PIPELINE ERROR] {error_data.get('lambda_name', 'Unknown')} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         Message=html_body,
         MessageStructure='json',
