@@ -62,6 +62,15 @@ Resources:
               - iam:TagRole
               - iam:UntagRole
             Resource: "*"
+          - Effect: Allow
+            Action:
+              - iam:GetPolicy
+              - iam:ListPolicyVersions
+              - iam:CreatePolicy
+              - iam:CreatePolicyVersion
+              - iam:DeletePolicy
+              - iam:DeletePolicyVersion
+            Resource: "arn:aws:iam::*:policy/*"
 
   ## 0. Cloud Formation Execution Role
   CloudFormationExecutionRole:
@@ -391,6 +400,7 @@ Resources:
       Environment:
         Variables:
           DATABRICKS_HOST: !Ref DatabricksHost
+          SECRET_ARN: !Ref SecretArn
           PIPELINE_ID: !Ref DatabricksPipelineId
           ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
           ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
@@ -408,6 +418,7 @@ Resources:
       Environment:
         Variables:
           DATABRICKS_HOST: !Ref DatabricksHost
+          SECRET_ARN: !Ref SecretArn
           PIPELINE_ID: !Ref DatabricksPipelineId
           ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
           ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
