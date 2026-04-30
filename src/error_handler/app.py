@@ -250,11 +250,16 @@ EVENT CONTEXT:
 {json.dumps(error_data.get('event_context', {}), indent=2)}
     """
     
-    # Publish to SNS
+    # Combine text and HTML into single message
+    message_structure = {
+        "default": text_body,
+        "email": f"MIME-Version: 1.0\nContent-Type: text/html; charset=UTF-8\n\n{html_body}"
+    }
+
     response = sns_client.publish(
         TopicArn=topic_arn,
         Subject=f"[AIRLINE PIPELINE ERROR] {error_data.get('lambda_name', 'Unknown')} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        Message=text_body,
+        Message=json.dumps(message_structure),
         MessageStructure='json',
         MessageAttributes={
             'Lambda': {'DataType': 'String', 'StringValue': error_data.get('lambda_name', 'Unknown')},
@@ -262,19 +267,6 @@ EVENT CONTEXT:
             'Source': {'DataType': 'String', 'StringValue': error_data.get('error_source', 'Lambda')}
         }
     )
-    
-    # Publish HTML version
-    sns_client.publish(
-        TopicArn=topic_arn,
-        Subject=f"[AIRLINE PIPELINE ERROR] {error_data.get('lambda_name', 'Unknown')} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        Message=html_body,
-        MessageStructure='json',
-        MessageAttributes={
-            'Lambda': {'DataType': 'String', 'StringValue': error_data.get('lambda_name', 'Unknown')},
-            'Timestamp': {'DataType': 'String', 'StringValue': error_data.get('timestamp', '')},
-            'ContentType': {'DataType': 'String', 'StringValue': 'HTML'}
-        }
-    )
-    
+
     logger.info(f"Error notification published. SNS MessageId: {response['MessageId']}")
     return response
