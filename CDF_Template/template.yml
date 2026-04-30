@@ -125,6 +125,9 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
 
   ## 2.5. ERROR NOTIFICATION INFRASTRUCTURE (SQS + SNS)
   ErrorNotificationQueue:
@@ -399,6 +402,7 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Environment:
         Variables:
+          ENV_TYPE: !Ref EnvType
           DATABRICKS_HOST: !Ref DatabricksHost
           SECRET_ARN: !Ref SecretArn
           PIPELINE_ID: !Ref DatabricksPipelineId
@@ -472,6 +476,19 @@ Resources:
             FunctionName: !Ref CleanupFunction
         - LambdaInvokePolicy:
             FunctionName: !Ref ErrorHandlerFunction
+      Events:
+        TriggerOnS3Upload:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - aws.s3
+              detail-type:
+                - "Object Created"
+              detail:
+                bucket:
+                  name:
+                    - !Ref LandingBucket
       Definition:
         StartAt: TriggerDatabricks
         States:
