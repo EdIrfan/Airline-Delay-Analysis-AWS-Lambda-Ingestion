@@ -2,7 +2,7 @@ import json
 import boto3
 import logging
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from botocore.exceptions import ClientError
 
 # Set up structured logging
@@ -33,7 +33,7 @@ def send_error_to_sqs(lambda_name, error_message, error_traceback, event, contex
             'error_source': 'Lambda',
             'error_message': str(error_message),
             'error_traceback': error_traceback,
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'log_group': context.log_group_name,
             'log_stream': context.log_stream_name,
             'event_context': event if isinstance(event, dict) else str(event)
