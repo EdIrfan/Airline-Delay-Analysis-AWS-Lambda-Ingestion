@@ -71,8 +71,8 @@ def lambda_handler(event, context):
             # Log the incoming event for debugging (Be careful with PII in production)
             logger.info(f"Incoming Event: {json.dumps(event)}")
             
-            bucket = event['Records'][0]['s3']['bucket']['name']
-            file_key = event['Records'][0]['s3']['object']['key']
+            bucket = event['detail']['bucket']['name']
+            file_key = event['detail']['object']['key']
             logger.info(f"Target file detected: s3://{bucket}/{file_key}")
         except (KeyError, IndexError, TypeError) as e:
             logger.error(f"Event structure validation failed: {str(e)}")
