@@ -169,29 +169,48 @@ def lambda_handler(event, context):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
         # Get pipeline ID from environment
-        logger.info("Step 6: Patching DLT pipeline configuration...")
+        logger.info("Step 6: Fetching current DLT pipeline configuration...")
         pipeline_id = os.environ.get('DATABRICKS_PIPELINE_ID')
         if not pipeline_id:
             logger.error("✗ Missing DATABRICKS_PIPELINE_ID environment variable")
             return {"statusCode": 500, "status": "ERROR", "message": "Missing Pipeline ID configuration."}
 
-        # Update pipeline configuration with S3 path and environment
-        # DLT pipelines don't support dynamic parameter passing from jobs, so we must update the pipeline config first
-        patch_url = f"{db_host.rstrip('/')}/api/2.0/pipelines/{pipeline_id}"
-        patch_payload = {
-            "configuration": {
-                "pipeline.env": env_type,
-                "pipeline.landing_path": f"s3://{bucket}/"
-            }
-        }
+        pipeline_url = f"{db_host.rstrip('/')}/api/2.0/pipelines/{pipeline_id}"
 
         try:
-            logger.info(f"Updating pipeline configuration...")
+            logger.info(f"Retrieving pipeline configuration...")
+            logger.info(f"  → Pipeline ID: {pipeline_id}")
+
+            get_response = requests.get(pipeline_url, headers=headers, timeout=15)
+
+            if get_response.status_code != 200:
+                logger.error(f"✗ Failed to fetch pipeline configuration")
+                logger.error(f"  → HTTP Status Code: {get_response.status_code}")
+                logger.error(f"  → Response: {get_response.text}")
+                return {
+                    "statusCode": get_response.status_code,
+                    "status": "ERROR",
+                    "message": f"Failed to fetch pipeline configuration: {get_response.text}"
+                }
+
+            # Get the complete pipeline config (preserves all UC settings)
+            current_pipeline = get_response.json()
+            logger.info(f"✓ Pipeline configuration retrieved successfully")
+
+            # Merge our parameter updates into the existing config
+            logger.info("Step 7: Updating DLT pipeline configuration...")
+            if 'configuration' not in current_pipeline:
+                current_pipeline['configuration'] = {}
+
+            current_pipeline['configuration']['pipeline.env'] = env_type
+            current_pipeline['configuration']['pipeline.landing_path'] = f"s3://{bucket}/"
+
+            logger.info(f"Sending updated pipeline configuration...")
             logger.info(f"  → Pipeline ID: {pipeline_id}")
             logger.info(f"  → Environment: {env_type}")
             logger.info(f"  → Landing Path: s3://{bucket}/")
 
-            put_response = requests.put(patch_url, headers=headers, json=patch_payload, timeout=15)
+            put_response = requests.put(pipeline_url, headers=headers, json=current_pipeline, timeout=15)
 
             if put_response.status_code != 200:
                 logger.error(f"✗ Failed to update pipeline configuration")
@@ -211,7 +230,7 @@ def lambda_handler(event, context):
 
         # Prepare and trigger Databricks Job
         # Using Jobs API (not Pipelines API) for better control and run-level monitoring
-        logger.info("Step 7: Triggering Databricks Job...")
+        logger.info("Step 8: Triggering Databricks Job...")
         api_url = f"{db_host.rstrip('/')}/api/2.1/jobs/run-now"
 
         # job_parameters are passed to the Databricks job and available in job context
