@@ -104,16 +104,17 @@ def lambda_handler(event, context):
         # 4. Trigger Databricks DLT Update
         api_url = f"{db_host.rstrip('/')}/api/2.0/pipelines/{pipeline_id}/updates"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        
+        # Use 'configuration' instead of 'pipeline_parameters' for DLT Updates API
         payload = {
-            "full_refresh": False, 
-            "cause": "API_TRIGGER",
-            "pipeline_parameters": {
+            "full_refresh": False,
+            "configuration": {
                 "pipeline.env": env_type,
                 "pipeline.landing_path": f"s3://{bucket}/"
             }
         }
 
-        logger.info(f"Triggering DLT Pipeline: {pipeline_id} for ENV: {env_type}")
+        logger.info(f"Triggering DLT Pipeline: {pipeline_id} for ENV: {env_type} with payload: {json.dumps(payload)}")
         
         try:
             response = requests.post(api_url, headers=headers, json=payload, timeout=15)
