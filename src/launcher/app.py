@@ -196,25 +196,26 @@ def lambda_handler(event, context):
             # Get the complete pipeline config (preserves all UC settings)
             current_pipeline = get_response.json()
             logger.info(f"✓ Pipeline configuration retrieved successfully")
-            logger.info(f"Pipeline response keys: {list(current_pipeline.keys())}")
-            logger.info(f"Pipeline spec keys: {list(current_pipeline.get('spec', {}).keys()) if 'spec' in current_pipeline else 'N/A'}")
 
-            # Merge our parameter updates into the existing config
+            # Extract only the spec (the actual pipeline definition)
+            # Don't send read-only fields like state, creator_user_name, latest_updates, etc.
+            pipeline_spec = current_pipeline.get('spec', {})
             logger.info("Step 7: Updating DLT pipeline configuration...")
-            if 'configuration' not in current_pipeline:
-                current_pipeline['configuration'] = {}
 
-            current_pipeline['configuration']['pipeline.env'] = env_type
-            current_pipeline['configuration']['pipeline.landing_path'] = f"s3://{bucket}/"
+            # Merge our parameter updates into the spec configuration
+            if 'configuration' not in pipeline_spec:
+                pipeline_spec['configuration'] = {}
 
-            logger.info(f"Sending updated pipeline configuration...")
+            pipeline_spec['configuration']['pipeline.env'] = env_type
+            pipeline_spec['configuration']['pipeline.landing_path'] = f"s3://{bucket}/"
+
+            logger.info(f"Sending updated pipeline specification...")
             logger.info(f"  → Pipeline ID: {pipeline_id}")
             logger.info(f"  → Environment: {env_type}")
             logger.info(f"  → Landing Path: s3://{bucket}/")
-            logger.info(f"PUT payload keys: {list(current_pipeline.keys())}")
-            logger.info(f"PUT payload: {json.dumps(current_pipeline, indent=2, default=str)}")
+            logger.info(f"Pipeline spec configuration: {json.dumps(pipeline_spec.get('configuration', {}), indent=2)}")
 
-            put_response = requests.put(pipeline_url, headers=headers, json=current_pipeline, timeout=15)
+            put_response = requests.put(pipeline_url, headers=headers, json=pipeline_spec, timeout=15)
 
             if put_response.status_code != 200:
                 logger.error(f"✗ Failed to update pipeline configuration")
