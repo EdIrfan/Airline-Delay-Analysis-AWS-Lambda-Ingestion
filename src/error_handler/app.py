@@ -20,7 +20,6 @@ ERROR_TOPIC_ARN = os.environ.get('ERROR_TOPIC_ARN')
 
 
 def format_html_email(error_data):
-    """Format error information into a rich HTML email."""
     lambda_name = error_data.get('lambda_name', 'Unknown')
     error_message = error_data.get('error_message', 'No error message provided')
     error_traceback = error_data.get('error_traceback', 'No traceback available')
@@ -29,11 +28,19 @@ def format_html_email(error_data):
     log_stream = error_data.get('log_stream', 'N/A')
     event_context = error_data.get('event_context', {})
     error_source = error_data.get('error_source', 'Lambda')
-    
-    # Create CloudWatch Logs deep link
+
+    logger.info("Formatting HTML email...")
+    logger.info(f"  → Lambda: {lambda_name}")
+    logger.info(f"  → Error Source: {error_source}")
+    logger.info(f"  → Log Group: {log_group}")
+    logger.info(f"  → Log Stream: {log_stream}")
+
+    # Generate deep-link to CloudWatch Logs Insights for the specific log stream
+    # Allows ops teams to quickly investigate without manual navigation
     log_link = f"https://console.aws.amazon.com/cloudwatch/home?#logsV2:logs-insights$3FqueryDetail$3D~(end~0~start~-3600~timeType~'RELATIVE~unit~'seconds~editorString~'fields*20*40timestamp*2c*20*40message*0a*7c*20filter*20*40logStream*3d*22{log_stream}*22*0a*7c*20stats*20count()*20by*20*40message~source~'{log_group})"
-    
-    # Escape HTML entities for safety
+
+    # HTML escape all user-controlled content to prevent injection attacks
+    # Error message and traceback might contain special characters that need escaping in HTML context
     escaped_error_msg = escape(error_message)
     escaped_traceback = escape(error_traceback)
     escaped_log_group = escape(log_group)
@@ -116,26 +123,31 @@ def format_html_email(error_data):
 
 
 def lambda_handler(event, context):
-    """
-    Main error handler function.
-    Processes messages from SQS and publishes formatted emails to SNS.
-    Can be triggered by:
-    1. SQS queue polling (via EventSourceMapping)
-    2. Direct invocation from Step Function for failure reporting
-    """
-    logger.info(f"Error handler invoked with event: {json.dumps(event)}")
-    
+    logger.info("=" * 80)
+    logger.info("ERROR HANDLER FUNCTION STARTED - Processing pipeline error")
+    logger.info("=" * 80)
+
     try:
-        # Check if this is a direct invocation from Step Function or SQS
+        logger.info(f"Event received: {json.dumps(event)}")
+
+        # Two invocation modes:
+        # 1. SQS polling: EventSourceMapping triggers this function with batch of error messages
+        # 2. Direct Step Function: Failure state in Step Function calls this directly for immediate notification
         if 'Records' in event:
-            # SQS batch event
+            logger.info("Message type: SQS batch event (from EventSourceMapping)")
             return process_sqs_messages(event)
         else:
-            # Direct invocation (e.g., from Step Function failure state)
+            logger.info("Message type: Direct invocation from Step Function failure state")
             return process_direct_error(event, context)
-    
+
     except Exception as e:
-        logger.exception("Error handler failed to process error")
+        logger.error("=" * 80)
+        logger.error("ERROR HANDLER FUNCTION FAILED")
+        logger.error("=" * 80)
+        logger.error(f"Error Type: {type(e).__name__}")
+        logger.error(f"Error Message: {str(e)}")
+        logger.exception("Full stack trace:")
+
         return {
             "statusCode": 500,
             "status": "ERROR",
@@ -144,49 +156,75 @@ def lambda_handler(event, context):
 
 
 def process_sqs_messages(event):
-    """Process SQS batch messages."""
-    logger.info(f"Processing {len(event['Records'])} SQS message(s)")
-    
+    logger.info("=" * 80)
+    logger.info("PROCESSING SQS BATCH MESSAGES")
+    logger.info("=" * 80)
+
+    total_messages = len(event['Records'])
+    logger.info(f"Processing {total_messages} error message(s) from SQS queue")
+
     queue_url = os.environ.get('ERROR_QUEUE_URL')
+    logger.info(f"SQS Queue URL: {queue_url}")
+
     failed_messages = []
-    
-    for record in event['Records']:
+
+    for idx, record in enumerate(event['Records'], 1):
+        logger.info(f"Processing message {idx}/{total_messages}...")
         try:
             message_body = json.loads(record['body'])
             receipt_handle = record['receiptHandle']
-            
-            # Publish to SNS
+
+            logger.info(f"  → Lambda Function: {message_body.get('lambda_name', 'Unknown')}")
+            logger.info(f"  → Error Source: {message_body.get('error_source', 'Unknown')}")
+            logger.info(f"  → Timestamp: {message_body.get('timestamp', 'N/A')}")
+
+            # Publish to SNS first, then delete from SQS
+            # If SNS publish fails, the message stays in SQS and will be retried by EventSourceMapping
             publish_error_notification(message_body)
-            
-            # Delete from SQS
+            logger.info(f"  ✓ Error notification published to SNS")
+
+            # Delete only after successful SNS publish to ensure at-least-once delivery
             sqs_client.delete_message(
                 QueueUrl=queue_url,
                 ReceiptHandle=receipt_handle
             )
-            logger.info(f"Successfully processed and deleted message: {receipt_handle}")
-            
+            logger.info(f"  ✓ Message deleted from SQS queue")
+
         except json.JSONDecodeError:
-            logger.error(f"Invalid JSON in SQS message: {record['body']}")
+            logger.error(f"  ✗ Failed to parse JSON in message {idx}")
+            logger.error(f"  → Raw message body: {record['body'][:200]}...")
+            # Don't delete malformed messages - they'll stay in SQS and trigger redrive policy
             failed_messages.append(record['receiptHandle'])
         except Exception as e:
-            logger.exception(f"Failed to process SQS record: {str(e)}")
+            logger.error(f"  ✗ Error processing message {idx}: {str(e)}")
+            logger.exception(f"  → Full error details:")
+            # Keep failed messages in queue for retry
             failed_messages.append(record['receiptHandle'])
-    
+
+    logger.info("=" * 80)
+    logger.info("SQS BATCH PROCESSING COMPLETE")
+    logger.info("=" * 80)
+    logger.info(f"Summary:")
+    logger.info(f"  → Total Messages: {total_messages}")
+    logger.info(f"  → Successfully Processed: {total_messages - len(failed_messages)}")
+    logger.info(f"  → Failed: {len(failed_messages)}")
+
     return {
         "statusCode": 200,
         "status": "PROCESSED",
-        "processed": len(event['Records']) - len(failed_messages),
+        "processed": total_messages - len(failed_messages),
         "failed": len(failed_messages)
     }
 
 
 def process_direct_error(event, context):
-    """Process direct invocation from Step Function or Lambda exception."""
-    logger.info("Processing direct error invocation")
-    
+    logger.info("=" * 80)
+    logger.info("PROCESSING DIRECT ERROR INVOCATION")
+    logger.info("=" * 80)
+
     try:
-        # Convert Step Function error to error data format
         if 'error_source' in event and event['error_source'] == 'StepFunction':
+            logger.info("Error source: Step Function State Machine")
             error_data = {
                 'lambda_name': 'StepFunction',
                 'error_source': 'Step Function State Machine',
@@ -198,20 +236,36 @@ def process_direct_error(event, context):
                 'event_context': event.get('event_context', {})
             }
         else:
-            # Generic error from Lambda
+            logger.info("Error source: Direct Lambda invocation")
             error_data = event
-        
-        # Publish to SNS
+
+        logger.info(f"Error Details:")
+        logger.info(f"  → Lambda/Source: {error_data.get('lambda_name', 'Unknown')}")
+        logger.info(f"  → Message: {error_data.get('error_message', 'N/A')[:100]}...")
+        logger.info(f"  → Timestamp: {error_data.get('timestamp', 'N/A')}")
+
+        logger.info("Publishing error notification to SNS...")
         publish_error_notification(error_data)
-        
+        logger.info("✓ Error notification successfully published to SNS")
+
+        logger.info("=" * 80)
+        logger.info("DIRECT ERROR PROCESSING COMPLETE")
+        logger.info("=" * 80)
+
         return {
             "statusCode": 200,
             "status": "PUBLISHED",
             "message": "Error notification published to SNS"
         }
-    
+
     except Exception as e:
-        logger.exception(f"Failed to process direct error: {str(e)}")
+        logger.error("=" * 80)
+        logger.error("DIRECT ERROR PROCESSING FAILED")
+        logger.error("=" * 80)
+        logger.error(f"Error Type: {type(e).__name__}")
+        logger.error(f"Error Message: {str(e)}")
+        logger.exception("Full stack trace:")
+
         return {
             "statusCode": 500,
             "status": "ERROR",
@@ -220,15 +274,16 @@ def process_direct_error(event, context):
 
 
 def publish_error_notification(error_data):
-    """Publish formatted error to SNS topic."""
-    logger.info(f"Publishing error notification for Lambda: {error_data.get('lambda_name', 'Unknown')}")
-    
+    logger.info("Preparing error notification for email...")
+    logger.info(f"  → Lambda Function: {error_data.get('lambda_name', 'Unknown')}")
+    logger.info(f"  → Error Source: {error_data.get('error_source', 'Unknown')}")
+
     topic_arn = os.environ.get('ERROR_TOPIC_ARN')
-    
-    # Format HTML email
+    logger.info(f"  → SNS Topic ARN: {topic_arn}")
+
     html_body = format_html_email(error_data)
-    
-    # Create text version
+    logger.info("  ✓ HTML email body formatted")
+
     text_body = f"""
 PIPELINE ERROR NOTIFICATION
 
@@ -249,24 +304,14 @@ Log Stream: {error_data.get('log_stream', 'N/A')}
 EVENT CONTEXT:
 {json.dumps(error_data.get('event_context', {}), indent=2)}
     """
-    
-    # Combine text and HTML into single message
-    message_structure = {
-        "default": text_body,
-        "email": f"MIME-Version: 1.0\nContent-Type: text/html; charset=UTF-8\n\n{html_body}"
-    }
 
+    logger.info("Sending notification via SNS...")
     response = sns_client.publish(
         TopicArn=topic_arn,
         Subject=f"[AIRLINE PIPELINE ERROR] {error_data.get('lambda_name', 'Unknown')} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        Message=json.dumps(message_structure),
-        MessageStructure='json',
-        MessageAttributes={
-            'Lambda': {'DataType': 'String', 'StringValue': error_data.get('lambda_name', 'Unknown')},
-            'Timestamp': {'DataType': 'String', 'StringValue': error_data.get('timestamp', '')},
-            'Source': {'DataType': 'String', 'StringValue': error_data.get('error_source', 'Lambda')}
-        }
+        Message=text_body
     )
 
-    logger.info(f"Error notification published. SNS MessageId: {response['MessageId']}")
+    logger.info(f"✓ Error notification published to SNS successfully")
+    logger.info(f"  → SNS MessageId: {response['MessageId']}")
     return response
