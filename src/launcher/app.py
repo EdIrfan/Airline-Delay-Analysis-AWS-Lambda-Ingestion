@@ -191,16 +191,16 @@ def lambda_handler(event, context):
             logger.info(f"  → Environment: {env_type}")
             logger.info(f"  → Landing Path: s3://{bucket}/")
 
-            patch_response = requests.patch(patch_url, headers=headers, json=patch_payload, timeout=15)
+            put_response = requests.put(patch_url, headers=headers, json=patch_payload, timeout=15)
 
-            if patch_response.status_code != 200:
-                logger.error(f"✗ Failed to patch pipeline configuration")
-                logger.error(f"  → HTTP Status Code: {patch_response.status_code}")
-                logger.error(f"  → Response: {patch_response.text}")
+            if put_response.status_code != 200:
+                logger.error(f"✗ Failed to update pipeline configuration")
+                logger.error(f"  → HTTP Status Code: {put_response.status_code}")
+                logger.error(f"  → Response: {put_response.text}")
                 return {
-                    "statusCode": patch_response.status_code,
+                    "statusCode": put_response.status_code,
                     "status": "ERROR",
-                    "message": f"Pipeline configuration update failed: {patch_response.text}"
+                    "message": f"Pipeline configuration update failed: {put_response.text}"
                 }
 
             logger.info(f"✓ Pipeline configuration updated successfully")
