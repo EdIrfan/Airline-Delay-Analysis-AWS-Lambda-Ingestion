@@ -4,6 +4,7 @@ import boto3
 import requests
 import logging
 import traceback
+import time
 from datetime import datetime, timezone
 from botocore.exceptions import ClientError
 
@@ -15,16 +16,19 @@ logger.setLevel(logging.INFO)
 sqs_client = boto3.client('sqs')
 ERROR_QUEUE_URL = os.environ.get('ERROR_QUEUE_URL')
 
+# Token caching for performance (5-minute cache)
+_cached_token = None
+_token_cache_time = None
+TOKEN_CACHE_TTL = 300
+
 
 def send_error_to_sqs(lambda_name, error_message, error_traceback, event, context):
-    """
-    Send error details to SQS for centralized error handling.
-    """
     if not ERROR_QUEUE_URL:
-        logger.warning("ERROR_QUEUE_URL not configured. Skipping SQS error reporting.")
+        logger.warning("⚠️  ERROR_QUEUE_URL not configured - skipping centralized error reporting")
         return
-    
+
     try:
+        logger.info("Sending error details to SQS for centralized handling...")
         error_data = {
             'lambda_name': lambda_name,
             'error_source': 'Lambda',
@@ -35,139 +39,205 @@ def send_error_to_sqs(lambda_name, error_message, error_traceback, event, contex
             'log_stream': context.log_stream_name,
             'event_context': event if isinstance(event, dict) else str(event)
         }
-        
+
         sqs_client.send_message(
             QueueUrl=ERROR_QUEUE_URL,
             MessageBody=json.dumps(error_data)
         )
-        logger.info(f"Error details sent to SQS queue: {ERROR_QUEUE_URL}")
+        logger.info(f"✓ Error details successfully sent to SQS queue")
+        logger.info(f"  → Lambda: {lambda_name}")
+        logger.info(f"  → Queue URL: {ERROR_QUEUE_URL}")
     except Exception as sqs_error:
-        logger.exception(f"Failed to send error to SQS: {str(sqs_error)}")
+        logger.error(f"✗ Failed to send error to SQS queue")
+        logger.error(f"  → Lambda: {lambda_name}")
+        logger.error(f"  → Error: {str(sqs_error)}")
+        logger.exception("Full error details:")
 
 
 def get_db_token(secret_arn):
-    """Fetches credentials from Secrets Manager with structured logging."""
+    global _cached_token, _token_cache_time
+
+    current_time = time.time()
+    # Token caching: Avoid repeated Secrets Manager calls within same Lambda execution
+    # This reduces API calls and latency since Secrets Manager has rate limits
+    if _cached_token and _token_cache_time and (current_time - _token_cache_time < TOKEN_CACHE_TTL):
+        cache_age = int(current_time - _token_cache_time)
+        logger.info(f"✓ Using cached Databricks token (cached {cache_age}s ago, expires in {TOKEN_CACHE_TTL - cache_age}s)")
+        return _cached_token
+
     client = boto3.client('secretsmanager')
     try:
-        logger.info(f"Attempting to fetch secret: {secret_arn}")
+        logger.info(f"Fetching fresh Databricks token from Secrets Manager: {secret_arn}")
         response = client.get_secret_value(SecretId=secret_arn)
         secret_dict = json.loads(response['SecretString'])
-        
+
+        # Extract token from Secrets Manager secret format (expected structure: {"token": "pat_xxx"})
         token = secret_dict.get('token')
         if not token:
-            logger.error("Secret found, but 'token' key is missing in JSON.")
+            logger.error("✗ Secret retrieved but 'token' field is missing in the secret JSON")
             return None
-            
+
+        # Cache token in-memory for 5 minutes to reduce Secrets Manager load
+        _cached_token = token
+        _token_cache_time = current_time
+        logger.info(f"✓ Fresh token obtained and cached (expires in {TOKEN_CACHE_TTL}s)")
         return token
     except Exception as e:
-        logger.exception(f"CRITICAL: Secrets Manager fetch failed.")
+        logger.error(f"✗ Failed to retrieve Databricks token from Secrets Manager")
+        logger.error(f"  → Secret ARN: {secret_arn}")
+        logger.error(f"  → Error: {str(e)}")
+        logger.exception("Full error details:")
         return None
 
 def lambda_handler(event, context):
-    logger.info("Lambda execution started with event")
+    logger.info("=" * 80)
+    logger.info("LAUNCHER FUNCTION STARTED - Processing S3 file upload event")
+    logger.info("=" * 80)
+
     try:
-        # 1. Extract file info from S3 Event
+        # Extract S3 file information from EventBridge event
+        # EventBridge sends S3 events with structure: event['detail']['bucket']['name'] and event['detail']['object']['key']
         try:
-            # Log the incoming event for debugging (Be careful with PII in production)
-            logger.info(f"Incoming Event: {json.dumps(event)}")
-            
+            logger.info("Step 1: Validating S3 event structure...")
+            logger.info(f"Raw event received: {json.dumps(event)}")
+
             bucket = event['detail']['bucket']['name']
             file_key = event['detail']['object']['key']
-            logger.info(f"Target file detected: s3://{bucket}/{file_key}")
+            logger.info(f"✓ S3 Event validated successfully")
+            logger.info(f"  → Bucket: {bucket}")
+            logger.info(f"  → File Key: {file_key}")
         except (KeyError, IndexError, TypeError) as e:
-            logger.error(f"Event structure validation failed: {str(e)}")
+            # EventBridge S3 events must have this structure - if not, data pipeline is misconfigured
+            logger.error(f"✗ Failed to extract S3 information from event: {str(e)}")
+            logger.error("Event structure does not match expected EventBridge S3 format")
             return {
                 "statusCode": 400,
                 "status": "ERROR",
                 "message": "Malformed S3 Event structure."
             }
 
-        # 2. Setup Config
+        # Load and validate environment configuration
+        # These are set by CloudFormation during deployment and passed to Lambda via environment variables
+        logger.info("Step 2: Loading environment configuration...")
         db_host = os.environ.get('DATABRICKS_HOST')
         secret_arn = os.environ.get('SECRET_ARN')
-        pipeline_id = os.environ.get('PIPELINE_ID')
+        job_id = os.environ.get('DATABRICKS_JOB_ID')
         env_type = os.environ.get('ENV_TYPE')
 
-        if not all([db_host, secret_arn, pipeline_id, env_type]):
-            logger.error("Environment variables are incomplete.")
+        if not all([db_host, secret_arn, job_id, env_type]):
+            missing_vars = [v for v in [('DATABRICKS_HOST', db_host), ('SECRET_ARN', secret_arn),
+                                       ('DATABRICKS_JOB_ID', job_id), ('ENV_TYPE', env_type)] if not v[1]]
+            logger.error(f"✗ Missing required environment variables: {[m[0] for m in missing_vars]}")
             return {"statusCode": 500, "status": "ERROR", "message": "Missing Environment Variables."}
 
-        # 3. Authenticate
+        logger.info(f"✓ Environment configuration loaded for environment: {env_type}")
+
+        # Validate Databricks host configuration
+        # Basic validation: must be HTTPS/HTTP and point to a Databricks workspace
+        # This prevents SSRF attacks by ensuring we're connecting to the right service
+        logger.info("Step 3: Validating Databricks host configuration...")
+        if not db_host.startswith(('https://', 'http://')) or '.databricks.' not in db_host:
+            logger.error(f"✗ Invalid DATABRICKS_HOST format: {db_host}")
+            logger.error("Host must be a valid HTTPS/HTTP URL pointing to a Databricks workspace")
+            return {"statusCode": 500, "status": "ERROR", "message": "Invalid Databricks host configuration."}
+        logger.info(f"✓ Databricks host validation passed: {db_host}")
+
+        # Validate and convert Job ID to integer
+        # Databricks API requires job_id to be an integer, not a string
+        # Validation here prevents ValueError crashes when calling int() on invalid input
+        logger.info("Step 4: Validating Databricks Job ID...")
+        try:
+            job_id_int = int(job_id)
+            logger.info(f"✓ Job ID is valid: {job_id_int}")
+        except (ValueError, TypeError):
+            logger.error(f"✗ Job ID must be numeric, received: {job_id}")
+            return {"statusCode": 500, "status": "ERROR", "message": "Invalid Job ID configuration. Job ID must be numeric."}
+
+        # Authenticate with Databricks
+        logger.info("Step 5: Authenticating with Databricks...")
         token = get_db_token(secret_arn)
         if not token:
+            logger.error("✗ Failed to retrieve Databricks token from Secrets Manager")
             return {
-                "statusCode": 500, 
+                "statusCode": 500,
                 "status": "ERROR",
                 "message": "Authentication Failure: Could not retrieve token."
             }
-        
-        # 4. Update Pipeline Configuration with runtime parameters
-        patch_url = f"{db_host.rstrip('/')}/api/2.0/pipelines/{pipeline_id}"
+        logger.info("✓ Successfully authenticated with Databricks")
+
+        # Prepare and trigger Databricks Job
+        # Using Jobs API (not Pipelines API) for better control and run-level monitoring
+        logger.info("Step 6: Preparing to trigger Databricks Job...")
+        api_url = f"{db_host.rstrip('/')}/api/2.1/jobs/run-now"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        
-        # First, update the pipeline configuration
-        config_payload = {
-            "configuration": {
+
+        # pipeline_params are passed to the job and available as job.parameters in the DLT pipeline
+        # This allows dynamic parameter injection without modifying the job definition
+        payload = {
+            "job_id": job_id_int,
+            "pipeline_params": {
                 "pipeline.env": env_type,
                 "pipeline.landing_path": f"s3://{bucket}/"
             }
         }
-        
-        logger.info(f"Updating pipeline configuration: {json.dumps(config_payload)}")
-        
-        try:
-            config_response = requests.patch(patch_url, headers=headers, json=config_payload, timeout=15)
-            if config_response.status_code not in [200, 201]:
-                logger.error(f"Failed to update pipeline config: {config_response.status_code} - {config_response.text}")
-                return {
-                    "statusCode": config_response.status_code,
-                    "status": "ERROR",
-                    "message": f"Pipeline config update failed: {config_response.text}"
-                }
-            logger.info("Pipeline configuration updated successfully")
-        except requests.exceptions.RequestException as e:
-            logger.exception("Failed to update pipeline configuration")
-            return {"statusCode": 502, "status": "ERROR", "message": f"Config update failed: {str(e)}"}
-        
-        # 5. Now trigger the pipeline update
-        api_url = f"{db_host.rstrip('/')}/api/2.0/pipelines/{pipeline_id}/updates"
-        payload = {"full_refresh": False}
 
-        logger.info(f"Triggering DLT Pipeline: {pipeline_id} for ENV: {env_type}")
-        
+        logger.info("Step 7: Triggering Databricks Job...")
+        logger.info(f"  → Job ID: {job_id_int}")
+        logger.info(f"  → Environment: {env_type}")
+        logger.info(f"  → S3 Landing Path: s3://{bucket}/")
+
         try:
+            # 15s timeout: sufficient for Databricks API response, prevents hanging connections
             response = requests.post(api_url, headers=headers, json=payload, timeout=15)
-            
+
             if response.status_code != 200:
-                logger.error(f"Databricks API Rejected Request. Code: {response.status_code}, Response: {response.text}")
+                # Databricks API returns error details in response.text for debugging
+                logger.error(f"✗ Databricks API rejected the request")
+                logger.error(f"  → HTTP Status Code: {response.status_code}")
+                logger.error(f"  → API Response: {response.text}")
                 return {
                     "statusCode": response.status_code,
                     "status": "ERROR",
                     "message": f"Databricks API Error: {response.text}"
                 }
 
+            # Jobs API returns run_id (different from Pipelines API which returns update_id)
+            # run_id is used to poll job status via the Checker Lambda
             data = response.json()
-            update_id = data.get('update_id')
-            logger.info(f"DLT Update Triggered Successfully. Update ID: {update_id}")
-            
+            run_id = data.get('run_id')
+            logger.info(f"✓ Databricks Job triggered successfully!")
+            logger.info(f"  → Run ID: {run_id}")
+            logger.info(f"  → Job ID: {job_id_int}")
+            logger.info(f"  → Status: STARTED")
+            logger.info("=" * 80)
+            logger.info("LAUNCHER FUNCTION COMPLETED SUCCESSFULLY")
+            logger.info("=" * 80)
+
             return {
                 "statusCode": 200,
                 "status": "STARTED",
-                "update_id": update_id,
+                "run_id": run_id,
                 "file_key": file_key,
                 "bucket": bucket
             }
-            
+
         except requests.exceptions.Timeout:
-            logger.warning("Databricks API call timed out after 15 seconds.")
+            logger.error("✗ Databricks API call timed out after 15 seconds")
+            logger.error("The connection to Databricks took too long to complete")
             return {"statusCode": 504, "status": "ERROR", "message": "API Timeout."}
         except requests.exceptions.RequestException as e:
-            logger.exception("Network failure during Databricks API call.")
+            logger.error(f"✗ Network error while communicating with Databricks API")
+            logger.error(f"  → Error Details: {str(e)}")
             return {"statusCode": 502, "status": "ERROR", "message": f"Network Failure: {str(e)}"}
 
     except Exception as e:
-        # 5. Global Catch-All
-        logger.exception("Unexpected system failure.")
+        logger.error("=" * 80)
+        logger.error("LAUNCHER FUNCTION FAILED WITH UNEXPECTED ERROR")
+        logger.error("=" * 80)
+        logger.error(f"Error Type: {type(e).__name__}")
+        logger.error(f"Error Message: {str(e)}")
+        logger.exception("Full stack trace:")
+
         error_traceback = traceback.format_exc()
         send_error_to_sqs('LauncherFunction', str(e), error_traceback, event, context)
         return {

@@ -28,9 +28,9 @@ Parameters:
     Type: String
     Description: "The Databricks Workspace URL"
 
-  DatabricksPipelineId:
+  DatabricksJobId:
     Type: String
-    Description: "The UUID of the target DLT Pipeline"
+    Description: "The Databricks Job ID that wraps the DLT Pipeline"
 
   NotificationEmail:
     Type: String
@@ -405,7 +405,7 @@ Resources:
           ENV_TYPE: !Ref EnvType
           DATABRICKS_HOST: !Ref DatabricksHost
           SECRET_ARN: !Ref SecretArn
-          PIPELINE_ID: !Ref DatabricksPipelineId
+          DATABRICKS_JOB_ID: !Ref DatabricksJobId
           ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
           ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
 
@@ -423,7 +423,6 @@ Resources:
         Variables:
           DATABRICKS_HOST: !Ref DatabricksHost
           SECRET_ARN: !Ref SecretArn
-          PIPELINE_ID: !Ref DatabricksPipelineId
           ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
           ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
 
