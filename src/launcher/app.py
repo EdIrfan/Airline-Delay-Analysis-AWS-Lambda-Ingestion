@@ -177,8 +177,8 @@ def lambda_handler(event, context):
         payload = {
             "job_id": job_id_int,
             "job_parameters": {
-                "pipeline.env": env_type,
-                "pipeline.landing_path": f"s3://{bucket}/"
+                "env": env_type,
+                "landing_path": f"s3://{bucket}/"
             }
         }
 
