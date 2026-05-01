@@ -7,9 +7,9 @@ def test_lambda_handler_success(mocker, mock_s3_event, mock_context):
     # 1. Mock the secret fetch
     mocker.patch('src.launcher.app.get_db_token', return_value='fake-token-123')
 
-    # 2. Mock the PATCH call to update pipeline configuration
-    mock_patch = mocker.patch('src.launcher.app.requests.patch')
-    mock_patch.return_value.status_code = 200
+    # 2. Mock the PUT call to update pipeline configuration
+    mock_put = mocker.patch('src.launcher.app.requests.put')
+    mock_put.return_value.status_code = 200
 
     # 3. Mock the POST call to trigger job
     mock_post = mocker.patch('src.launcher.app.requests.post')
@@ -25,7 +25,7 @@ def test_lambda_handler_success(mocker, mock_s3_event, mock_context):
     assert response['status'] == 'STARTED'
     assert response['bucket'] == 'fake-landing-bucket'
     assert response['file_key'] == 'input/airline_data.csv'
-    mock_patch.assert_called_once()
+    mock_put.assert_called_once()
     mock_post.assert_called_once()
 
 
@@ -56,8 +56,8 @@ def test_lambda_handler_databricks_api_error(mocker, mock_s3_event, mock_context
     """Test handler when Databricks API returns error."""
     mocker.patch('src.launcher.app.get_db_token', return_value='fake-token-123')
 
-    mock_patch = mocker.patch('src.launcher.app.requests.patch')
-    mock_patch.return_value.status_code = 200
+    mock_put = mocker.patch('src.launcher.app.requests.put')
+    mock_put.return_value.status_code = 200
 
     mock_post = mocker.patch('src.launcher.app.requests.post')
     mock_post.return_value.status_code = 400
@@ -74,8 +74,8 @@ def test_lambda_handler_timeout(mocker, mock_s3_event, mock_context):
     """Test handler when Databricks API call times out."""
     mocker.patch('src.launcher.app.get_db_token', return_value='fake-token-123')
 
-    mock_patch = mocker.patch('src.launcher.app.requests.patch')
-    mock_patch.return_value.status_code = 200
+    mock_put = mocker.patch('src.launcher.app.requests.put')
+    mock_put.return_value.status_code = 200
 
     mock_post = mocker.patch('src.launcher.app.requests.post')
     mock_post.side_effect = requests.exceptions.Timeout("Connection timeout")
@@ -91,8 +91,8 @@ def test_lambda_handler_network_error(mocker, mock_s3_event, mock_context):
     """Test handler when network error occurs."""
     mocker.patch('src.launcher.app.get_db_token', return_value='fake-token-123')
 
-    mock_patch = mocker.patch('src.launcher.app.requests.patch')
-    mock_patch.return_value.status_code = 200
+    mock_put = mocker.patch('src.launcher.app.requests.put')
+    mock_put.return_value.status_code = 200
 
     mock_post = mocker.patch('src.launcher.app.requests.post')
     mock_post.side_effect = requests.exceptions.ConnectionError("Network unreachable")
@@ -102,3 +102,18 @@ def test_lambda_handler_network_error(mocker, mock_s3_event, mock_context):
     assert response['statusCode'] == 502
     assert response['status'] == 'ERROR'
     assert 'Network Failure' in response['message']
+
+
+def test_lambda_handler_pipeline_config_update_failure(mocker, mock_s3_event, mock_context):
+    """Test handler when pipeline configuration PUT fails."""
+    mocker.patch('src.launcher.app.get_db_token', return_value='fake-token-123')
+
+    mock_put = mocker.patch('src.launcher.app.requests.put')
+    mock_put.return_value.status_code = 404
+    mock_put.return_value.text = '{"error_code": "ENDPOINT_NOT_FOUND", "message": "Pipeline not found"}'
+
+    response = lambda_handler(mock_s3_event, mock_context)
+
+    assert response['statusCode'] == 404
+    assert response['status'] == 'ERROR'
+    assert 'Pipeline configuration update failed' in response['message']
