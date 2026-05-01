@@ -165,9 +165,50 @@ def lambda_handler(event, context):
             }
         logger.info("✓ Successfully authenticated with Databricks")
 
+        # Get pipeline ID from environment
+        logger.info("Step 6: Patching DLT pipeline configuration...")
+        pipeline_id = os.environ.get('DATABRICKS_PIPELINE_ID')
+        if not pipeline_id:
+            logger.error("✗ Missing DATABRICKS_PIPELINE_ID environment variable")
+            return {"statusCode": 500, "status": "ERROR", "message": "Missing Pipeline ID configuration."}
+
+        # Update pipeline configuration with S3 path and environment
+        # DLT pipelines don't support dynamic parameter passing from jobs, so we must update the pipeline config first
+        patch_url = f"{db_host.rstrip('/')}/api/2.0/pipelines/{pipeline_id}"
+        patch_payload = {
+            "configuration": {
+                "pipeline.env": env_type,
+                "pipeline.landing_path": f"s3://{bucket}/"
+            }
+        }
+
+        try:
+            logger.info(f"Updating pipeline configuration...")
+            logger.info(f"  → Pipeline ID: {pipeline_id}")
+            logger.info(f"  → Environment: {env_type}")
+            logger.info(f"  → Landing Path: s3://{bucket}/")
+
+            patch_response = requests.patch(patch_url, headers=headers, json=patch_payload, timeout=15)
+
+            if patch_response.status_code != 200:
+                logger.error(f"✗ Failed to patch pipeline configuration")
+                logger.error(f"  → HTTP Status Code: {patch_response.status_code}")
+                logger.error(f"  → Response: {patch_response.text}")
+                return {
+                    "statusCode": patch_response.status_code,
+                    "status": "ERROR",
+                    "message": f"Pipeline configuration update failed: {patch_response.text}"
+                }
+
+            logger.info(f"✓ Pipeline configuration updated successfully")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"✗ Network error while updating pipeline configuration")
+            logger.error(f"  → Error: {str(e)}")
+            return {"statusCode": 502, "status": "ERROR", "message": f"Pipeline update failed: {str(e)}"}
+
         # Prepare and trigger Databricks Job
         # Using Jobs API (not Pipelines API) for better control and run-level monitoring
-        logger.info("Step 6: Preparing to trigger Databricks Job...")
+        logger.info("Step 7: Preparing to trigger Databricks Job...")
         api_url = f"{db_host.rstrip('/')}/api/2.1/jobs/run-now"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 

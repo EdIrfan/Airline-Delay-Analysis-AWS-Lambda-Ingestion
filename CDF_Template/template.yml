@@ -32,6 +32,10 @@ Parameters:
     Type: String
     Description: "The Databricks Job ID that wraps the DLT Pipeline"
 
+  DatabricksPipelineId:
+    Type: String
+    Description: "The Databricks DLT Pipeline ID for configuration updates"
+
   NotificationEmail:
     Type: String
     Description: "Email address for failure notifications"
@@ -406,6 +410,7 @@ Resources:
           DATABRICKS_HOST: !Ref DatabricksHost
           SECRET_ARN: !Ref SecretArn
           DATABRICKS_JOB_ID: !Ref DatabricksJobId
+          DATABRICKS_PIPELINE_ID: !Ref DatabricksPipelineId
           ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
           ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
 
