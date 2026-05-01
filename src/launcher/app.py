@@ -171,11 +171,12 @@ def lambda_handler(event, context):
         api_url = f"{db_host.rstrip('/')}/api/2.1/jobs/run-now"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        # pipeline_params are passed to the job and available as job.parameters in the DLT pipeline
+        # job_parameters are passed to the Databricks job and available in job context
         # This allows dynamic parameter injection without modifying the job definition
+        # Using modern job_parameters field (not legacy pipeline_params) per latest Databricks API
         payload = {
             "job_id": job_id_int,
-            "pipeline_params": {
+            "job_parameters": {
                 "pipeline.env": env_type,
                 "pipeline.landing_path": f"s3://{bucket}/"
             }
