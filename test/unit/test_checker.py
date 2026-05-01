@@ -12,11 +12,16 @@ def test_checker_success(mocker, mock_context):
     mock_get.return_value.json.return_value = {
         "update": {"state": "COMPLETED"}
     }
+    
+    # Mock the stop pipeline call
+    mock_post = mocker.patch('src.checker.app.requests.post')
+    mock_post.return_value.status_code = 200
 
     event = {"update_id": "update-999", "bucket": "b", "file_key": "f"}
     response = lambda_handler(event, mock_context)
 
     assert response['status'] == 'SUCCESS'
+    mock_post.assert_called_once()  # Verify stop was called
 
 
 def test_checker_missing_update_id(mocker, mock_context):
@@ -50,11 +55,16 @@ def test_checker_pipeline_failed(mocker, mock_context):
     mock_get.return_value.json.return_value = {
         "update": {"state": "FAILED"}
     }
+    
+    # Mock the stop pipeline call
+    mock_post = mocker.patch('src.checker.app.requests.post')
+    mock_post.return_value.status_code = 200
 
     event = {"update_id": "update-999", "bucket": "b", "file_key": "f"}
     response = lambda_handler(event, mock_context)
 
     assert response['status'] == 'FAILED'
+    mock_post.assert_called_once()  # Verify stop was called on failure too
 
 
 def test_checker_still_running(mocker, mock_context):

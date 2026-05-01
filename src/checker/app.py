@@ -108,10 +108,34 @@ def lambda_handler(event, context):
             
             if current_state == 'COMPLETED':
                 logger.info(f"DLT Pipeline Sync Finished: {update_id}")
+                
+                # Stop the pipeline to prevent it from running indefinitely
+                stop_url = f"{db_host.rstrip('/')}/api/2.0/pipelines/{pipeline_id}/stop"
+                try:
+                    stop_response = requests.post(stop_url, headers=headers, timeout=10)
+                    if stop_response.status_code == 200:
+                        logger.info(f"Pipeline {pipeline_id} stopped successfully")
+                    else:
+                        logger.warning(f"Failed to stop pipeline: {stop_response.text}")
+                except Exception as stop_error:
+                    logger.warning(f"Could not stop pipeline: {str(stop_error)}")
+                
                 return {**event, "status": "SUCCESS", "raw_state": current_state}
             
             elif current_state in ['FAILED', 'CANCELED']:
                 logger.error(f"DLT Pipeline {current_state}: {update_id}")
+                
+                # Stop the pipeline on failure too
+                stop_url = f"{db_host.rstrip('/')}/api/2.0/pipelines/{pipeline_id}/stop"
+                try:
+                    stop_response = requests.post(stop_url, headers=headers, timeout=10)
+                    if stop_response.status_code == 200:
+                        logger.info(f"Pipeline {pipeline_id} stopped after failure")
+                    else:
+                        logger.warning(f"Failed to stop pipeline: {stop_response.text}")
+                except Exception as stop_error:
+                    logger.warning(f"Could not stop pipeline: {str(stop_error)}")
+                
                 return {**event, "status": "FAILED", "raw_state": current_state}
             
             else:
