@@ -165,6 +165,9 @@ def lambda_handler(event, context):
             }
         logger.info("✓ Successfully authenticated with Databricks")
 
+        # Setup headers for Databricks API calls
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
         # Get pipeline ID from environment
         logger.info("Step 6: Patching DLT pipeline configuration...")
         pipeline_id = os.environ.get('DATABRICKS_PIPELINE_ID')
@@ -208,9 +211,8 @@ def lambda_handler(event, context):
 
         # Prepare and trigger Databricks Job
         # Using Jobs API (not Pipelines API) for better control and run-level monitoring
-        logger.info("Step 7: Preparing to trigger Databricks Job...")
+        logger.info("Step 7: Triggering Databricks Job...")
         api_url = f"{db_host.rstrip('/')}/api/2.1/jobs/run-now"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
         # job_parameters are passed to the Databricks job and available in job context
         # This allows dynamic parameter injection without modifying the job definition
@@ -222,8 +224,6 @@ def lambda_handler(event, context):
                 "pipeline.landing_path": f"s3://{bucket}/"
             }
         }
-
-        logger.info("Step 7: Triggering Databricks Job...")
         logger.info(f"  → Job ID: {job_id_int}")
         logger.info(f"  → Environment: {env_type}")
         logger.info(f"  → S3 Landing Path: s3://{bucket}/")
