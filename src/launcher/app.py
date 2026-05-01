@@ -101,20 +101,39 @@ def lambda_handler(event, context):
                 "message": "Authentication Failure: Could not retrieve token."
             }
         
-        # 4. Trigger Databricks DLT Update
-        api_url = f"{db_host.rstrip('/')}/api/2.0/pipelines/{pipeline_id}/updates"
+        # 4. Update Pipeline Configuration with runtime parameters
+        patch_url = f"{db_host.rstrip('/')}/api/2.0/pipelines/{pipeline_id}"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         
-        # Use 'configuration' instead of 'pipeline_parameters' for DLT Updates API
-        payload = {
-            "full_refresh": False,
+        # First, update the pipeline configuration
+        config_payload = {
             "configuration": {
                 "pipeline.env": env_type,
                 "pipeline.landing_path": f"s3://{bucket}/"
             }
         }
+        
+        logger.info(f"Updating pipeline configuration: {json.dumps(config_payload)}")
+        
+        try:
+            config_response = requests.patch(patch_url, headers=headers, json=config_payload, timeout=15)
+            if config_response.status_code not in [200, 201]:
+                logger.error(f"Failed to update pipeline config: {config_response.status_code} - {config_response.text}")
+                return {
+                    "statusCode": config_response.status_code,
+                    "status": "ERROR",
+                    "message": f"Pipeline config update failed: {config_response.text}"
+                }
+            logger.info("Pipeline configuration updated successfully")
+        except requests.exceptions.RequestException as e:
+            logger.exception("Failed to update pipeline configuration")
+            return {"statusCode": 502, "status": "ERROR", "message": f"Config update failed: {str(e)}"}
+        
+        # 5. Now trigger the pipeline update
+        api_url = f"{db_host.rstrip('/')}/api/2.0/pipelines/{pipeline_id}/updates"
+        payload = {"full_refresh": False}
 
-        logger.info(f"Triggering DLT Pipeline: {pipeline_id} for ENV: {env_type} with payload: {json.dumps(payload)}")
+        logger.info(f"Triggering DLT Pipeline: {pipeline_id} for ENV: {env_type}")
         
         try:
             response = requests.post(api_url, headers=headers, json=payload, timeout=15)
