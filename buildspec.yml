@@ -1,0 +1,43 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.13
+    commands:
+      - echo "[INSTALL] Installing dependencies..."
+      - pip install --upgrade pip
+      - pip install -r requirements.txt
+      - pip install -r test/requirements.txt
+      - echo "[INSTALL] Updating AWS SAM CLI..."
+      - pip install aws-sam-cli
+  pre_build:
+    commands:
+      - echo "[PRE-BUILD] Running Unit Tests..."
+      - export PYTHONPATH=$PYTHONPATH:$(pwd)/src
+      - python -m pytest test/unit/ -v
+      - echo "[PRE-BUILD] Injecting root requirements into Lambda folders for SAM..."
+      - cp requirements.txt src/launcher/
+      - cp requirements.txt src/checker/
+      - cp requirements.txt src/cleanup/
+      - cp requirements.txt src/error_handler/
+  build:
+    commands:
+      - echo "[BUILD] Current directory and contents:"
+      - pwd
+      - ls -la
+      - echo "[BUILD] Building SAM template..."
+      - sam build --template CDF_Template/template.yml
+      - echo "[BUILD] Packaging SAM template..."
+      - sam package --template-file .aws-sam/build/template.yaml --s3-bucket $ARTIFACT_BUCKET --output-template-file packaged.yaml
+      - echo "[BUILD] Preparing configuration..."
+      - cp CDF_Template/parameters_${ENV_TYPE}.json ./standard_params.json
+  post_build:
+    commands:
+      - echo "[POST-BUILD] Build completed on $(date)"
+
+artifacts:
+  files:
+    - packaged.yaml
+    - standard_params.json
+  discard-paths: yes

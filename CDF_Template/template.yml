@@ -1,0 +1,550 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Multi-Environment Orchestration Pipeline for Airline Delay Analysis
+
+Parameters:
+  EnvType:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: "Target environment (dev/prod)"
+
+  GitHubBranch:
+    Type: String
+    Description: "The branch to listen to (e.g., dev or main)"
+
+  ConnectionArn:
+    Type: String
+    Description: "The CodeStar Connection ARN for GitHub"
+
+  RepoId:
+    Type: String
+    Default: "EdIrfan/Airline-Delay-Analysis-AWS-Lambda-Ingestion"
+
+  SecretArn:
+    Type: String
+    Description: "ARN of the Databricks PAT token in Secrets Manager"
+
+  DatabricksHost:
+    Type: String
+    Description: "The Databricks Workspace URL"
+
+  DatabricksJobId:
+    Type: String
+    Description: "The Databricks Job ID that wraps the DLT Pipeline"
+
+  DatabricksPipelineId:
+    Type: String
+    Description: "The Databricks DLT Pipeline ID for configuration updates"
+
+  NotificationEmail:
+    Type: String
+    Description: "Email address for failure notifications"
+    AllowedPattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+
+Resources:
+  
+  ## 0. Cloud Formation Execution Role Managed Policy
+  CloudFormationExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:GetRole
+              - iam:PassRole
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:GetRolePolicy
+              - iam:ListRolePolicies
+              - iam:ListAttachedRolePolicies
+              - iam:TagRole
+              - iam:UntagRole
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - iam:GetPolicy
+              - iam:ListPolicyVersions
+              - iam:CreatePolicy
+              - iam:CreatePolicyVersion
+              - iam:DeletePolicy
+              - iam:DeletePolicyVersion
+            Resource: "arn:aws:iam::*:policy/*"
+
+  ## 0. Cloud Formation Execution Role
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "Airline-Delay-Analysis-Execution-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+        - !Ref CloudFormationExecutionPolicy
+
+
+  ## 1. THE ARTIFACT VAULT (S3)
+  PipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "airline-pipeline-artifacts-${AWS::AccountId}-${EnvType}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ## 2. THE LANDING ZONE (Source S3)
+  LandingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "airline-data-landing-${AWS::AccountId}-${EnvType}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LoggingConfiguration:
+        DestinationBucketName: !Ref PipelineArtifactBucket
+        LogFilePrefix: logs/landing/
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+
+  ## 2.5. ERROR NOTIFICATION INFRASTRUCTURE (SQS + SNS)
+  ErrorNotificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "airline-error-notification-${EnvType}"
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 1209600  # 14 days
+
+  ErrorNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "airline-error-notifications-${EnvType}"
+      DisplayName: "Airline Pipeline Error Notifications"
+
+  ErrorNotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref ErrorNotificationTopic
+      Endpoint: !Ref NotificationEmail
+  
+  ## 3. THE PIPELINE ROLE MANAGED POLICY
+  PipelineExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetBucket*
+              - s3:GetObject*
+              - s3:PutObject
+            Resource: 
+              - !GetAtt PipelineArtifactBucket.Arn
+              - !Sub "${PipelineArtifactBucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+              - codeconnections:UseConnection
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackResources
+              - cloudformation:DescribeStackEvents
+              - cloudformation:GetTemplate
+              - cloudformation:DescribeChangeSet
+              - cloudformation:CreateChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:ValidateTemplate
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource: !GetAtt CloudFormationExecutionRole.Arn
+            Condition:
+              StringEqualsIfExists:
+                "iam:PassedToService": "cloudformation.amazonaws.com"
+
+  ## 3. THE PIPELINE ROLE
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref PipelineExecutionPolicy
+
+
+  ## 4. THE BUILD ROLE MANAGED POLICY
+  BuildExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:GetBucketLocation
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource: !GetAtt CloudFormationExecutionRole.Arn
+
+  ## 4. THE BUILD ROLE
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref BuildExecutionPolicy
+
+  ## 5. THE LAMBDA EXECUTION ROLE MANAGED POLICY
+  LambdaAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: !Ref SecretArn
+          - Effect: Allow
+            Action: 
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !Sub "${LandingBucket.Arn}/*"
+          - Effect: Allow
+            Action: 
+              - s3:ListBucket
+            Resource: !GetAtt LandingBucket.Arn
+          - Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt ErrorNotificationQueue.Arn
+          - Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+            Resource: !GetAtt ErrorNotificationQueue.Arn
+          - Effect: Allow
+            Action:
+              - sns:Publish
+            Resource: !Ref ErrorNotificationTopic
+
+  ## 5. THE LAMBDA EXECUTION ROLE (Shared by all 3 Lambdas)
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref LambdaAccessPolicy
+
+  ## 6. THE BUILD ENGINE (CodeBuild)
+  PipelineBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "Airline-Delay-Analysis-Build-${EnvType}"
+      ServiceRole: !GetAtt BuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: ENV_TYPE
+            Value: !Ref EnvType
+            Type: PLAINTEXT
+          - Name: ARTIFACT_BUCKET 
+            Value: !Ref PipelineArtifactBucket
+            Type: PLAINTEXT
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+
+  ## 7. THE PIPELINE (The CI/CD Orchestrator)
+  AppPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "Airline-Delay-Analysis-Pipeline-${EnvType}"
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHub_Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              Configuration:
+                ConnectionArn: !Ref ConnectionArn
+                FullRepositoryId: !Ref RepoId
+                BranchName: !Ref GitHubBranch
+                DetectChanges: true 
+              OutputArtifacts:
+                - Name: SourceArtifact
+        - Name: Build_and_Test
+          Actions:
+            - Name: Run_Tests_and_Package
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ProjectName: !Ref PipelineBuildProject
+        - Name: Deploy
+          Actions:
+            - Name: Create_ChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              InputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                StackName: !Sub "Airline-App-Stack-${EnvType}"
+                ChangeSetName: !Sub "Pipeline-ChangeSet-${EnvType}"
+                Capabilities: CAPABILITY_IAM,CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+                TemplatePath: BuildArtifact::packaged.yaml
+                TemplateConfiguration: BuildArtifact::standard_params.json
+                RoleArn: !GetAtt CloudFormationExecutionRole.Arn
+              RunOrder: 1
+            - Name: Execute_ChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                StackName: !Sub "Airline-App-Stack-${EnvType}"
+                ChangeSetName: !Sub "Pipeline-ChangeSet-${EnvType}"
+              RunOrder: 2
+
+  ## 8. THE LAMBDA FUNCTIONS
+  LauncherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src/launcher/
+      Handler: app.lambda_handler
+      Runtime: python3.13
+      EphemeralStorage:
+        Size: 512
+      MemorySize: 1024
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          ENV_TYPE: !Ref EnvType
+          DATABRICKS_HOST: !Ref DatabricksHost
+          SECRET_ARN: !Ref SecretArn
+          DATABRICKS_JOB_ID: !Ref DatabricksJobId
+          DATABRICKS_PIPELINE_ID: !Ref DatabricksPipelineId
+          ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
+          ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
+
+  CheckerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src/checker/
+      Handler: app.lambda_handler
+      Runtime: python3.13
+      EphemeralStorage:
+        Size: 512
+      MemorySize: 1024
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          DATABRICKS_HOST: !Ref DatabricksHost
+          SECRET_ARN: !Ref SecretArn
+          ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
+          ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
+
+  CleanupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src/cleanup/
+      Handler: app.lambda_handler
+      Runtime: python3.13
+      EphemeralStorage:
+        Size: 512
+      MemorySize: 1024
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
+          ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
+
+  ErrorHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src/error_handler/
+      Handler: app.lambda_handler
+      Runtime: python3.13
+      EphemeralStorage:
+        Size: 512
+      MemorySize: 512
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          ERROR_QUEUE_URL: !Ref ErrorNotificationQueue
+          ERROR_TOPIC_ARN: !Ref ErrorNotificationTopic
+      Timeout: 30
+
+  ## 9. THE ORCHESTRATOR (Step Function)
+  OrchestrationStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionSubstitutions:
+        LauncherArn: !GetAtt LauncherFunction.Arn
+        CheckerArn: !GetAtt CheckerFunction.Arn
+        CleanupArn: !GetAtt CleanupFunction.Arn
+        ErrorHandlerArn: !GetAtt ErrorHandlerFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref LauncherFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CheckerFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CleanupFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ErrorHandlerFunction
+      Events:
+        TriggerOnS3Upload:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - aws.s3
+              detail-type:
+                - "Object Created"
+              detail:
+                bucket:
+                  name:
+                    - !Ref LandingBucket
+      Definition:
+        StartAt: TriggerDatabricks
+        States:
+          TriggerDatabricks:
+            Type: Task
+            Resource: "${LauncherArn}"
+            Retry:
+              - ErrorEquals: ["States.ALL"]
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2.0
+            Next: WaitForProcessing
+          
+          WaitForProcessing:
+            Type: Wait
+            Seconds: 60
+            Next: CheckStatus
+
+          CheckStatus:
+            Type: Task
+            Resource: "${CheckerArn}"
+            Next: EvaluateStatus
+
+          EvaluateStatus:
+            Type: Choice
+            Choices:
+              - Variable: "$.status"
+                StringEquals: "SUCCESS"
+                Next: RunCleanup
+              - Variable: "$.status"
+                StringEquals: "RUNNING"
+                Next: WaitForProcessing
+            Default: ReportFailure
+
+          RunCleanup:
+            Type: Task
+            Resource: "${CleanupArn}"
+            End: true
+
+          ReportFailure:
+            Type: Task
+            Resource: "${ErrorHandlerArn}"
+            Parameters:
+              error_source: "StepFunction"
+              error_message.$: "States.JsonToString($)"
+              timestamp.$: "$$.State.EnteredTime"
+            Next: PipelineFailed
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                Next: PipelineFailed
+
+          PipelineFailed:
+            Type: Fail
+            Cause: "Databricks DLT Pipeline failed or timed out."
+            Error: "DLTError"
