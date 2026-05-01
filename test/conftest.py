@@ -5,6 +5,7 @@ import os
 os.environ['DATABRICKS_HOST'] = 'https://fake-workspace.cloud.databricks.com'
 os.environ['SECRET_ARN'] = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:db-token'
 os.environ['DATABRICKS_JOB_ID'] = '12345'
+os.environ['DATABRICKS_PIPELINE_ID'] = 'f4ed740f-01c3-4cac-8d09-939815359b64'
 os.environ['ENV_TYPE'] = 'dev'
 os.environ['AWS_DEFAULT_REGION'] = 'us-east-2'
 os.environ['ERROR_QUEUE_URL'] = 'https://sqs.us-east-2.amazonaws.com/123456789012/airline-error-notification-dev'
