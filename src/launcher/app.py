@@ -196,6 +196,8 @@ def lambda_handler(event, context):
             # Get the complete pipeline config (preserves all UC settings)
             current_pipeline = get_response.json()
             logger.info(f"✓ Pipeline configuration retrieved successfully")
+            logger.info(f"Pipeline response keys: {list(current_pipeline.keys())}")
+            logger.info(f"Pipeline spec keys: {list(current_pipeline.get('spec', {}).keys()) if 'spec' in current_pipeline else 'N/A'}")
 
             # Merge our parameter updates into the existing config
             logger.info("Step 7: Updating DLT pipeline configuration...")
@@ -209,6 +211,8 @@ def lambda_handler(event, context):
             logger.info(f"  → Pipeline ID: {pipeline_id}")
             logger.info(f"  → Environment: {env_type}")
             logger.info(f"  → Landing Path: s3://{bucket}/")
+            logger.info(f"PUT payload keys: {list(current_pipeline.keys())}")
+            logger.info(f"PUT payload: {json.dumps(current_pipeline, indent=2, default=str)}")
 
             put_response = requests.put(pipeline_url, headers=headers, json=current_pipeline, timeout=15)
 
