@@ -1,94 +1,207 @@
-# ✈️ Airline Delay Analysis - Serverless Ingestion & Orchestration Pipeline
+# ✈️ Airline Delay Analysis — Serverless Ingestion & Orchestration
 
 ![AWS](https://img.shields.io/badge/AWS-%23FF9900.svg?style=flat&logo=amazon-aws&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.13-blue.svg?style=flat&logo=python&logoColor=white)
-![Databricks](https://img.shields.io/badge/Databricks-F3722C.svg?style=flat&logo=databricks&logoColor=white)
-![AWS SAM](https://img.shields.io/badge/AWS_SAM-Serverless-red.svg?style=flat&logo=serverless&logoColor=white)
+![Databricks](https://img.shields.io/badge/Databricks-FF3621.svg?style=flat&logo=databricks&logoColor=white)
+![AWS SAM](https://img.shields.io/badge/AWS_SAM-IaC-orange.svg?style=flat)
+![Step Functions](https://img.shields.io/badge/Step_Functions-Orchestration-pink.svg?style=flat)
+![Status](https://img.shields.io/badge/Status-Production-green.svg?style=flat)
 
-## 📌 Project Overview
-This repository contains the infrastructure and application code for a fully automated, serverless data ingestion pipeline. Built natively on AWS using the Serverless Application Model (SAM), this architecture orchestrates data workflows between AWS S3 and Databricks, providing a highly scalable and fault-tolerant foundation for airline delay analysis.
-
-The project features a self-mutating CI/CD pipeline leveraging AWS CodePipeline and CodeBuild, ensuring that all infrastructure and application updates are continuously integrated, tested, and deployed with zero manual intervention.
-
----
-
-## 🏗️ Architecture & Core Components
-The backend logic is decoupled into three distinct AWS Lambda functions, ensuring modularity and adherence to the single-responsibility principle:
-
-### 1. Launcher Function (`src/launcher/`)
-* **Role:** The entry point of the pipeline.
-* **Function:** Ingests trigger events, authenticates with external APIs, and initiates the downstream Databricks workflow (`DatabricksPipelineId`).
-
-### 2. Checker Function (`src/checker/`)
-* **Role:** State monitor.
-* **Function:** Asynchronously polls the status of the running Databricks jobs, handling timeouts, pipeline failures, and successful completion states.
-
-### 3. Cleanup Function (`src/cleanup/`)
-* **Role:** Lifecycle management.
-* **Function:** Executes post-processing tasks, including the archival or deletion of processed S3 objects and parameter sanitization, ensuring storage optimization.
+> **This is one half of a two-repo system.**
+> This repo handles all **AWS infrastructure, CI/CD, and orchestration**.
+> The Databricks DLT transformation logic lives in the companion repo →
+> [`Airline-Delay-Analysis-Databricks-Source-Files`](https://github.com/EdIrfan/Airline-Delay-Analysis-Databricks-Source-Files)
 
 ---
 
-## 🚀 CI/CD Pipeline Lifecycle
-The deployment lifecycle is entirely automated via AWS CodePipeline, utilizing a strict two-step CloudFormation Change Set pattern to ensure safe infrastructure updates.
+## 🧭 What Does This Repo Do?
 
-* **Source Stage:** Connects directly to the repository via a secure GitHub App (CodeStar Connection). Listens for merges to the `dev` or `prod` branches.
-* **Build Stage (AWS CodeBuild):**
-  * Provisions a Python 3.13 environment.
-  * Executes the `buildspec.yml`.
-  * Runs the automated test suite (`pytest`) against all Lambda functions.
-  * Uses the AWS SAM CLI to resolve dependencies, compile the application, and package artifacts into the designated S3 Artifact Bucket.
-  * Dynamically injects environment-specific parameters (`parameters_dev.json` / `parameters_prod.json`).
-* **Deploy Stage (AWS CloudFormation):**
-  * **Action 1:** Generates a CloudFormation Change Set, validating the updated SAM template and JSON parameters against the live AWS environment.
-  * **Action 2:** Executes the Change Set, seamlessly updating IAM roles, Lambdas, and API configurations with zero downtime.
+This repository is the **trigger, orchestration, and deployment layer** of the Airline Delay Analysis pipeline. It doesn't transform data — it makes sure the right things happen at the right time, automatically, every time a new CSV lands in S3.
+
+From a 6.5M-row CSV file upload to 7 fully-populated Gold analytics tables in Databricks — this repo owns everything in between on the AWS side.
+
+**Zero manual intervention. Zero servers to manage.**
+
+---
+
+## 🏗️ Full System Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                        THIS REPO  (AWS Side)                         │
+│                                                                      │
+│  GitHub ──► CodeStar ──► CodePipeline ──► CodeBuild ──► CFN         │
+│                                                    └──► Lambda x4   │
+│                                                                      │
+│  CSV Upload ──► S3 Landing Bucket                                    │
+│                    └──► EventBridge (Object Created)                 │
+│                              └──► Step Functions State Machine       │
+│                                      ├── Launcher Lambda             │
+│                                      ├── Wait (60s polling)          │
+│                                      ├── Checker Lambda              │
+│                                      └── Cleanup Lambda              │
+│                                           └──► [on failure]          │
+│                                                 Error Handler Lambda │
+│                                                 └──► SQS ──► SNS ──► Email │
+└──────────────────────────────────────────────────────────────────────┘
+                              │
+                              │  triggers Databricks Job via REST API
+                              ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                  COMPANION REPO  (Databricks Side)                   │
+│   Bronze (Auto Loader) → Silver (11 quality rules) → Gold (7 tables)│
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🔗 Dependency on Companion Repo
+
+This repo **cannot function without** the Databricks pipeline defined in:
+**[`Airline-Delay-Analysis-Databricks-Source-Files`](https://github.com/EdIrfan/Airline-Delay-Analysis-Databricks-Source-Files)**
+
+| This Repo Does | Companion Repo Does |
+|---|---|
+| Detects CSV upload via EventBridge | Reads CSV from S3 via Auto Loader (Bronze) |
+| Authenticates with Databricks via Secrets Manager | Runs DLT transformations (Silver) |
+| Triggers the Databricks Job via REST API | Applies 11 quality rules & builds 7 Gold tables |
+| Polls job status every 60s (Checker Lambda) | Outputs analytics-ready Delta tables |
+| Deletes S3 file on success (Cleanup Lambda) | Handles full refresh on every run |
+| Sends email alert on failure (Error Handler) | — |
+
+The `DatabricksJobId` and `DatabricksPipelineId` in `samconfig.toml` and `parameters_*.json` are the bridge between both repos.
+
+---
+
+## ⚙️ Step Functions State Machine
+
+The core of this repo is the AWS Step Functions state machine that executes on every CSV upload:
+
+```
+TriggerDatabricks  (Launcher λ)
+    │  fetches PAT from Secrets Manager
+    │  PUTs updated config to Databricks Pipelines API
+    │  POSTs run-now to Databricks Jobs API  →  returns run_id
+    ▼
+WaitForProcessing  (60s wait state)
+    ▼
+CheckStatus  (Checker λ)
+    │  GETs /api/2.1/jobs/runs/get with run_id
+    │  returns  RUNNING | SUCCESS | FAILED
+    ▼
+EvaluateStatus  (Choice state)
+    ├── SUCCESS ──► RunCleanup  (Cleanup λ — deletes the S3 source file)
+    ├── RUNNING ──► back to WaitForProcessing  (loops until done)
+    └── DEFAULT ──► ReportFailure  (Error Handler λ → SQS → SNS → Email)
+```
+
+---
+
+## 🚀 CI/CD Pipeline — Self-Mutating Infrastructure
+
+Every push to the tracked branch triggers a full deploy automatically. No manual `sam deploy` ever needed.
+
+```
+GitHub Push
+    └──► CodeStar Connection  (GitHub App auth)
+              └──► CodePipeline triggered
+                        │
+                        ├── BUILD  (CodeBuild)
+                        │     ├── Spins up Python 3.13 environment
+                        │     ├── pip install all dependencies
+                        │     ├── pytest — all unit tests must pass
+                        │     ├── sam build  (resolves template.yml)
+                        │     └── sam package  (artifacts → S3 bucket)
+                        │
+                        └── DEPLOY  (CloudFormation)
+                              ├── Action 1: Create ChangeSet  (validate diff)
+                              └── Action 2: Execute ChangeSet  (deploy)
+                                    └── All 4 Lambdas updated, zero downtime
+```
+
+The infrastructure is **self-mutating** — the pipeline can update its own CodePipeline, Lambdas, and IAM roles on every merge.
 
 ---
 
 ## 📂 Repository Structure
-```text
-.
+
+```
+Airline-Delay-Analysis-AWS-Lambda-Ingestion/
+│
 ├── CDF_Template/
-│   ├── template.yml              # Primary AWS SAM Infrastructure-as-Code template
-│   ├── parameters_dev.json       # Development environment variables (e.g., Databricks IDs)
-│   └── parameters_prod.json      # Production environment variables
+│   ├── template.yml              # AWS SAM template — all infrastructure defined here
+│   ├── parameters_dev.json       # Dev environment overrides (Databricks IDs, ARNs)
+│   └── parameters_prod.json      # Prod environment overrides
+│
 ├── src/
-│   ├── launcher/                 # Launcher Lambda source code & requirements
-│   ├── checker/                  # Checker Lambda source code & requirements
-│   └── cleanup/                  # Cleanup Lambda source code & requirements
+│   ├── launcher/                 # Triggers the Databricks job (pipeline entry point)
+│   ├── checker/                  # Polls Databricks job status every 60s
+│   ├── cleanup/                  # Deletes S3 source file on success (idempotent)
+│   └── error_handler/            # Formats + routes failure alerts via SQS → SNS
+│
 ├── test/
-│   ├── unit/                     # Pytest unit tests for all Lambda functions
-│   └── requirements.txt          # Testing dependencies
-├── buildspec.yml                 # CodeBuild execution instructions
+│   └── unit/                     # pytest unit tests for all 4 Lambda functions
+│
+├── buildspec.yml                 # CodeBuild phases: install → test → build → package
+├── samconfig.toml                # SAM deploy config (stack name, region, param overrides)
+├── requirements.txt              # Shared Lambda dependencies
 └── README.md
 ```
 
 ---
 
-## ⚙️ Deployment & Configuration
-Because this architecture is managed via CodePipeline, manual terminal deployments are disabled for standard workflow progression.
+## 🔧 Key Configuration
 
-* **Environment Variables**
-Pipeline configuration is controlled via the parameters_${EnvType}.json files. Ensure the following keys are correctly defined before merging to the target branch:
+All environment-specific values live in `parameters_*.json` and `samconfig.toml`:
 
-* **EnvType:** The deployment environment (e.g., dev, prod).
-
-* **DatabricksPipelineId:** The unique identifier for the target Databricks Delta Live Tables (DLT) or job pipeline.
-
-* **ArtifactBucket:** The S3 bucket designated for SAM deployment packages.
-
-* **Triggering a Deployment:**
-Create a feature branch and implement code or infrastructure updates.
-
-* Ensure all tests pass locally.
-
-* Open a Pull Request and merge into the tracked branch (e.g., dev).
-
-* AWS CodePipeline will automatically intercept the webhook, build the SAM template, and deploy the updated CloudFormation stack.
+| Parameter | Description |
+|---|---|
+| `EnvType` | Deployment environment (`dev` / `prod`) |
+| `DatabricksHost` | Databricks workspace URL |
+| `DatabricksJobId` | Job ID to trigger in the companion repo |
+| `DatabricksPipelineId` | DLT Pipeline ID to update config on before each run |
+| `SecretArn` | ARN of the Secrets Manager secret holding the Databricks PAT |
+| `NotificationEmail` | Email address for failure alerts via SNS |
+| `ArtifactBucket` | S3 bucket for SAM deployment artifacts |
 
 ---
 
-## 🛡️ Security & IAM
-* **Privileges:** The pipeline utilizes a dedicated CloudFormationExecutionRole for assigning Roles, but since this is a demo project, I have not followed Principle of Least Priviledge and went on to create this with more priviledges than required.
+## 🛡️ Security
 
-* **Secret Management:** Sensitive credentials (like Databricks API tokens) are not hardcoded. They are dynamically resolved at runtime via AWS Secrets Manager.
+- **No hardcoded credentials.** The Databricks PAT is stored in AWS Secrets Manager and fetched at Lambda runtime — never in environment variables or code.
+- **IAM scoped roles.** All 4 Lambdas share a `LambdaExecutionRole` with a `LambdaAccessPolicy` covering only: Secrets Manager read, S3 get/delete, SQS send/receive/delete, SNS publish.
+- **Note:** This is a personal project — the CloudFormation execution role has broader permissions than strict least-privilege would require. Production hardening would scope these down further.
+
+---
+
+## 🧪 Running Tests Locally
+
+```bash
+# From repo root
+pip install -r requirements.txt
+pip install -r test/requirements.txt
+export PYTHONPATH=$PYTHONPATH:$(pwd)/src
+python -m pytest test/unit/ -v
+```
+
+---
+
+## 📊 Pipeline Stats
+
+| Metric | Value |
+|---|---|
+| Records processed annually | ~6.5 M |
+| Records filtered by quality rules | ~700 K |
+| Gold analytics tables produced | 7 |
+| Lambda functions deployed | 4 |
+| Quality rules (companion repo) | 11 |
+| Estimated Lambda cost | $1–2 / month |
+| Manual steps required | **0** |
+
+---
+
+## 🤝 Related
+
+- **Companion repo (DLT transformations):** [`Airline-Delay-Analysis-Databricks-Source-Files`](https://github.com/EdIrfan/Airline-Delay-Analysis-Databricks-Source-Files)
+- **AWS Stack name:** `Airline-App-Stack-prod`
+- **Region:** `us-east-1`
